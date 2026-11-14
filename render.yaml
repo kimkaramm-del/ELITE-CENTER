@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: elite-center-api
+    runtime: node
+    region: frankfurt
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: elite-center-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: ELITE_DATA_DIR
+        value: /var/data
+      - key: TRUST_PROXY
+        value: "true"
+      - key: ADMIN_ACCESS_CODE
+        sync: false
