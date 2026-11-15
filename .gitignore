@@ -24,6 +24,7 @@ server/student-profiles.json
 server/student-sessions.json
 server/student-photos/
 *.sqlite*
+flutter_app/firebase-options.json
 
 # Editor directories and files
 .vscode/*

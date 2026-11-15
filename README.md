@@ -61,7 +61,7 @@ npm run dev
 
 مصدر تطبيق الطلاب الأصلي موجود في `flutter_app/`. يشارك الـAPI وبيانات الكتالوج مع الموقع، ويشمل الصفحة الرئيسية والصفوف والمواد والمدرسين، طلب التسجيل، تسجيل الدخول، ملف الطالب، العلامات، الإعلانات، الطلبات، وموجز الطلاب. تبقى لوحة الإدارة والواجهة العامة على الويب في المشروع الحالي.
 
-يتطلب Flutter stable وAndroid SDK وJDK 21. يستخدم التطبيق شعار المركز لشاشة البداية وأيقونة Android، ويعرض اسم التطبيق بالإنجليزية أو العربية بحسب لغة الجهاز. من جذر المشروع:
+يتطلب Flutter stable وAndroid SDK Platforms 34 و36 وJDK 21. يستخدم التطبيق شعار المركز لشاشة البداية وأيقونة Android، ويعرض اسم التطبيق بالإنجليزية أو العربية بحسب لغة الجهاز. من جذر المشروع:
 
 ```sh
 cd flutter_app
@@ -69,7 +69,35 @@ flutter pub get
 flutter run --dart-define=API_BASE_URL=http://10.0.2.2:3001
 ```
 
-العنوان أعلاه مخصص لمحاكي Android عند تشغيل API محلياً. على جهاز فعلي استخدم عنوان الجهاز الذي يشغّل API واجعل `API_HOST=0.0.0.0`، أو استخدم عنوان API منشوراً عبر HTTPS. يستخدم التطبيق افتراضياً خدمة `https://elite-center-server.onrender.com`؛ تحقق من `/api/health` و`/api/catalog`، أو مرّر العنوان الفعلي عبر `API_BASE_URL` عند تغيّره. تنتهي طلبات API بمهلة 12 ثانية وتعرض الواجهة خيار إعادة المحاولة عند فشل الاتصال. يطلب التطبيق إذن إشعارات Android مرة واحدة بعد ظهور الصفحة الرئيسية؛ هذا الإذن وحده لا يفعّل إرسال إشعارات push عن بُعد، إذ يتطلب ذلك إعداد مزوّد push. لبناء APK تجريبي:
+العنوان أعلاه مخصص لمحاكي Android عند تشغيل API محلياً. على جهاز فعلي استخدم عنوان الجهاز الذي يشغّل API واجعل `API_HOST=0.0.0.0`، أو استخدم عنوان API منشوراً عبر HTTPS. يستخدم التطبيق افتراضياً خدمة `https://elite-center-server.onrender.com`؛ تحقق من `/api/health` و`/api/catalog`، أو مرّر العنوان الفعلي عبر `API_BASE_URL` عند تغيّره. تنتهي طلبات API بمهلة 12 ثانية وتعرض الواجهة خيار إعادة المحاولة عند فشل الاتصال.
+
+### تجهيز Firebase Cloud Messaging
+
+توجد حزم Firebase Core وCloud Messaging ومعالجة الرسائل أثناء فتح التطبيق أو عمله بالخلفية، ويُسجّل الجهاز في Firebase Messaging ويُحفظ معرّف تثبيت Firebase (FID) في التخزين الآمن باستخدام واجهات Firebase الحديثة. يمكن بناء التطبيق وتشغيله قبل إضافة إعدادات Firebase؛ سيستمر طلب إذن Android بالطريقة الحالية، لكن لن يتم تسجيل الجهاز في FCM حتى تضاف القيم الصحيحة.
+
+1. أنشئ مشروعاً في Firebase Console وأضف تطبيق Android بمعرّف الحزمة `com.elitecenter.elite_center`.
+2. نزّل `google-services.json` من صفحة إعداد التطبيق، ثم انسخ القيم التالية إلى `firebase-options.json` محلياً باستخدام المثال [firebase-options.example.json](./flutter_app/firebase-options.example.json):
+   - `FIREBASE_API_KEY`: قيمة `current_key` من `api_key`.
+   - `FIREBASE_APP_ID`: قيمة `mobilesdk_app_id` من العميل الذي يحمل الحزمة `com.elitecenter.elite_center`.
+   - `FIREBASE_MESSAGING_SENDER_ID`: قيمة `project_number` من `project_info`.
+   - `FIREBASE_PROJECT_ID`: قيمة `project_id` من `project_info`.
+3. من مجلد `flutter_app` شغّل:
+
+   ```sh
+   flutter run --dart-define-from-file=firebase-options.json
+   ```
+
+   أو لبناء APK:
+
+   ```sh
+   flutter build apk --release --dart-define-from-file=firebase-options.json
+   ```
+
+   الملف المحلي مستثنى من Git. القيم هي إعدادات عميل Firebase وليست مفتاح خدمة إدارية؛ لا تضع بيانات Service Account أو مفاتيح Admin SDK في التطبيق.
+
+4. فعّل Firebase Cloud Messaging للمشروع واختبر إرسال رسالة إلى التطبيق بعد فتحه مرة واحدة والموافقة على الإشعارات. الرسائل أثناء فتح التطبيق تظهر داخل التطبيق، ورسائل FCM التي تحتوي notification تظهر من Android بالخلفية. للحصول على إرسال تلقائي من لوحة الإدارة أو الخادم، يلزم لاحقاً تسجيل الجهاز لدى API وإعداد Firebase Admin SDK ببيانات اعتماد سرية في متغيرات بيئة Render؛ لا يرسل الخادم الحالي إشعارات FCM بعد.
+
+يطلب التطبيق إذن إشعارات Android مرة واحدة بعد ظهور الصفحة الرئيسية. لبناء APK تجريبي:
 
 ```sh
 flutter build apk --debug --dart-define=API_BASE_URL=https://elite-center-server.onrender.com

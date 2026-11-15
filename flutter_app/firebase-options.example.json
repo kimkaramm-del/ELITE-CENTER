@@ -1,0 +1,7 @@
+{
+  "API_BASE_URL": "https://elite-center-server.onrender.com",
+  "FIREBASE_API_KEY": "replace-with-current_key-from-google-services.json",
+  "FIREBASE_APP_ID": "replace-with-mobilesdk_app_id-for-com.elitecenter.elite_center",
+  "FIREBASE_MESSAGING_SENDER_ID": "replace-with-project_number",
+  "FIREBASE_PROJECT_ID": "replace-with-project_id"
+}

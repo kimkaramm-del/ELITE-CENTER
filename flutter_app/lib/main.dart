@@ -1,7 +1,12 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/services.dart';
 
 import 'data/api_client.dart';
+import 'data/firebase_messaging_service.dart';
 import 'data/notification_permission.dart';
 import 'screens/auth_screens.dart';
 import 'screens/home_screen.dart';
@@ -9,8 +14,13 @@ import 'screens/student_screens.dart';
 import 'theme.dart';
 import 'widgets/education_widgets.dart' as education;
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await FirebaseMessagingService.initialize();
+  } on FirebaseException catch (error) {
+    debugPrint('Firebase initialization failed: $error');
+  }
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
       statusBarColor: EliteColors.paper,
@@ -188,6 +198,52 @@ class _HomeShell extends StatefulWidget {
 class _HomeShellState extends State<_HomeShell> {
   int _selectedIndex = 0;
   bool _showStartupError = true;
+  late final StreamSubscription<RemoteMessage> _foregroundSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _foregroundSubscription = FirebaseMessagingService.foregroundMessages
+        .listen(_showNotification);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _requestNotificationPermission();
+    });
+  }
+
+  @override
+  void dispose() {
+    _foregroundSubscription.cancel();
+    super.dispose();
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    try {
+      await NotificationPermission.requestOnce();
+    } on PlatformException catch (error) {
+      debugPrint('Notification permission request failed: $error');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تعذر طلب إذن الإشعارات.')));
+    } on MissingPluginException catch (error) {
+      debugPrint('Notification permission channel is unavailable: $error');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تعذر طلب إذن الإشعارات.')));
+    }
+  }
+
+  void _showNotification(RemoteMessage message) {
+    final title = message.notification?.title;
+    final body = message.notification?.body;
+    final text = [
+      title,
+      body,
+    ].whereType<String>().where((part) => part.isNotEmpty).join('\n');
+    if (text.isEmpty || !mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+  }
 
   @override
   void initState() {
