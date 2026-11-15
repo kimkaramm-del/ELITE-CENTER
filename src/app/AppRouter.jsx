@@ -21,7 +21,7 @@ import Community from '../pages/dashboard/Community.jsx'
 import Announcements from '../pages/dashboard/Announcements.jsx'
 import Marks from '../pages/dashboard/Marks.jsx'
 import AdminDashboard from '../pages/AdminDashboard.jsx'
-import { initializeStudentAccess, studentProfileUpdatedEventName, verifyStudentSession } from '../services/database.js'
+import { studentProfileUpdatedEventName, verifyStudentSession } from '../services/database.js'
 import Footer from '../components/Footer.jsx'
 import { useLocale } from '../contexts/LocaleContext.jsx'
 
@@ -59,23 +59,6 @@ function StudentDashboardRoute() {
 }
 
 export default function AppRouter() {
-	const { t } = useLocale()
-	const [sessionStoreRetryCount, setSessionStoreRetryCount] = useState(0)
-	const [sessionStoreStatus, setSessionStoreStatus] = useState({ status: 'loading' })
-	useEffect(() => {
-		let isCurrent = true
-		initializeStudentAccess().then(() => {
-			if (isCurrent) setSessionStoreStatus({ status: 'ready' })
-		}).catch((error) => {
-			if (isCurrent) setSessionStoreStatus({ status: 'error', message: error.message })
-		})
-		return () => { isCurrent = false }
-	}, [sessionStoreRetryCount])
-
-	const isAdminRoute = window.location.pathname === '/admin'
-	if (!isAdminRoute && sessionStoreStatus.status === 'loading') return <main className="dashboard-access-state"><p role="status">{t('جارٍ تجهيز التخزين الآمن للجلسة...')}</p><Footer /></main>
-	if (!isAdminRoute && sessionStoreStatus.status === 'error') return <main className="dashboard-access-state"><p className="form-message" role="alert">{t(sessionStoreStatus.message || 'تعذر تجهيز التخزين الآمن للجلسة. تحقق من تثبيت منصة التطبيق ثم أعد المحاولة.')}</p><button className="button button-dark" type="button" onClick={() => { setSessionStoreStatus({ status: 'loading' }); setSessionStoreRetryCount((count) => count + 1) }}>{t('إعادة المحاولة')}</button><Footer /></main>
-
 	return (
 		<BrowserRouter>
 			<Routes>

@@ -212,7 +212,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   }
 
   Future<void> _reloadCatalog() async {
-    final next = EliteApi.instance.catalog();
+    final next = EliteApi.instance.catalog(forceRefresh: true);
     setState(() => _catalog = next);
     await next;
   }

@@ -11,19 +11,12 @@
     "server": "node server/api.js",
     "start": "node server/api.js",
     "build": "vite build",
-    "android:add": "cap add android",
-    "android:sync": "npm run build && cap sync android",
-    "android:build": "npm run android:sync && cd android && gradlew.bat assembleDebug",
+    "android:build": "cd flutter_app && flutter build apk --debug --dart-define=API_BASE_URL=https://elite-center-server.onrender.com",
     "lint": "oxlint",
     "test": "node --test",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@aparajita/capacitor-secure-storage": "^8.0.1",
-    "@capacitor/android": "^8.5.3",
-    "@capacitor/core": "^8.5.3",
-    "@capacitor/local-notifications": "^8.0.0",
-    "@capacitor/splash-screen": "^8.0.0",
     "better-sqlite3": "^13.1.1",
     "exceljs": "^4.4.0",
     "react": "^19.2.8",
@@ -31,7 +24,6 @@
     "react-router-dom": "^7.18.4"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.5.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^6.1.1",

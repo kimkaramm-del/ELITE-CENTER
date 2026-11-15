@@ -1,5 +1,3 @@
-import { Capacitor } from '@capacitor/core'
-import { createNativeSessionStore } from './nativeSessionStore.js'
 import fallbackCatalog from '../../server/catalog.json'
 
 const enrollmentStorageKey = 'elite-center:enrollments'
@@ -9,30 +7,9 @@ export const studentProfileUpdatedEventName = 'elite-center:student-profile-upda
 const subjectColors = ['mint', 'coral', 'yellow', 'rose', 'sage', 'blue']
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '')
 let browserSessionActive = false
-const nativeSessionStore = createNativeSessionStore()
-let secureStoragePromise
-
-function isNativeClient() {
-  return Capacitor.isNativePlatform()
-}
 
 function apiUrl(path) {
   return `${apiBaseUrl}${path}`
-}
-
-async function getSecureStorage() {
-  secureStoragePromise ??= import('@aparajita/capacitor-secure-storage').then(({ SecureStorage }) => SecureStorage)
-  return secureStoragePromise
-}
-
-export async function initializeStudentAccess() {
-  if (!isNativeClient()) return null
-  const { SecureStorage, KeychainAccess } = await import('@aparajita/capacitor-secure-storage')
-  secureStoragePromise = Promise.resolve(SecureStorage)
-  await SecureStorage.setSynchronize(false)
-  await SecureStorage.setDefaultKeychainAccess(KeychainAccess.whenUnlockedThisDeviceOnly)
-  const storage = SecureStorage
-  return nativeSessionStore.initialize(storage, window.localStorage)
 }
 
 async function loadCatalog() {
@@ -92,24 +69,16 @@ function createTeacherId(name) {
 export async function getCatalogSnapshot() { return loadCatalog() }
 
 function readStudentAccessSession() {
-  if (!isNativeClient()) {
-    try {
-      window.localStorage.removeItem(studentAccessSessionKey)
-    } catch {
-      return browserSessionActive ? { token: '' } : null
-    }
+  try {
+    window.localStorage.removeItem(studentAccessSessionKey)
+  } catch {
     return browserSessionActive ? { token: '' } : null
   }
-  return nativeSessionStore.get()
+  return browserSessionActive ? { token: '' } : null
 }
 
 export async function clearStudentAccess() {
   browserSessionActive = false
-  if (isNativeClient()) {
-    const storage = await getSecureStorage()
-    await nativeSessionStore.clear(storage)
-    return
-  }
   try {
     window.localStorage.removeItem(studentAccessSessionKey)
   } catch {
@@ -129,20 +98,7 @@ function studentRequestHeaders({ csrf = false } = {}) {
   }
 }
 
-async function logoutStudentWithBearer() {
-  const session = readStudentAccessSession()
-  if (!session) return
-  const response = await fetch(apiUrl('/api/logout'), {
-    method: 'POST',
-    headers: { authorization: `Bearer ${session.token}` },
-  })
-  const result = await response.json()
-  if (!response.ok) throw new Error(result.error ?? 'تعذر إنهاء الجلسة.')
-  await clearStudentAccess()
-}
-
 export async function logoutStudent() {
-  if (isNativeClient()) return logoutStudentWithBearer()
   const response = await fetch(apiUrl('/api/logout'), {
     method: 'POST',
     headers: { 'X-Elite-CSRF': '1' },
@@ -152,36 +108,7 @@ export async function logoutStudent() {
   await clearStudentAccess()
 }
 
-async function verifyAccessCodeWithBearer(email, code) {
-  const response = await fetch(apiUrl('/api/verify-code'), {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email: String(email).trim().toLowerCase(), code: String(code).trim() }),
-  })
-  const result = await response.json()
-  if (!response.ok) throw new Error(result.error ?? 'رمز الوصول غير صالح.')
-  if (!result.sessionToken || !Number.isFinite(result.expiresAt)) throw new Error('لم ينشئ الخادم جلسة دخول صالحة.')
-  const storage = await getSecureStorage()
-  try {
-    await nativeSessionStore.set(storage, { token: result.sessionToken, expiresAt: result.expiresAt })
-  } catch (error) {
-    const revokeResponse = await fetch(apiUrl('/api/logout'), {
-      method: 'POST',
-      headers: { authorization: `Bearer ${result.sessionToken}` },
-    }).catch((logoutError) => {
-      console.error('Could not revoke a native session after secure storage failed:', logoutError)
-      return null
-    })
-    if (revokeResponse && !revokeResponse.ok) {
-      console.error('The server did not revoke a native session after secure storage failed:', revokeResponse.status)
-    }
-    throw error
-  }
-  return result
-}
-
 export async function verifyAccessCode(email, code) {
-  if (isNativeClient()) return verifyAccessCodeWithBearer(email, code)
   const response = await fetch(apiUrl('/api/verify-code'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -194,28 +121,7 @@ export async function verifyAccessCode(email, code) {
   return result
 }
 
-async function verifyStudentSessionWithBearer() {
-  const session = readStudentAccessSession()
-  if (!session) return null
-  let response
-  try {
-    response = await fetch(apiUrl('/api/session'), {
-      cache: 'no-store',
-      headers: { authorization: `Bearer ${session.token}` },
-    })
-  } catch {
-    throw new Error('تعذر التحقق من جلسة الطالب. تحقق من الاتصال ثم أعد المحاولة.')
-  }
-  if (response.status === 401 || response.status === 403) {
-    await clearStudentAccess()
-    return null
-  }
-  if (!response.ok) throw new Error('تعذر التحقق من جلسة الطالب.')
-  return response.json()
-}
-
 export async function verifyStudentSession() {
-  if (isNativeClient()) return verifyStudentSessionWithBearer()
   try {
     const response = await fetch(apiUrl('/api/session'), {
       cache: 'no-store',

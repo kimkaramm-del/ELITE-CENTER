@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import usePageTitle from '../../hooks/usePageTitle.js'
 import { useLocale } from '../../contexts/LocaleContext.jsx'
-import { Capacitor } from '@capacitor/core'
 import { areAppNotificationsEnabled, getAppNotificationPermission, setAppNotificationsEnabled } from '../../services/appNotifications.js'
 import { getStudentProfile, logoutStudent, saveStudentProfile } from '../../services/database.js'
 import { ErrorBanner, ShimmerLoadingList } from '../../components/FeedbackStates.jsx'
@@ -25,7 +24,6 @@ export default function Settings() {
   const [notificationsEnabled, setNotificationsEnabled] = useState(areAppNotificationsEnabled)
   const [permission, setPermission] = useState('prompt')
   const [message, setMessage] = useState('')
-  const isAndroid = Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android'
   usePageTitle('الإعدادات')
 
   useEffect(() => {
@@ -243,7 +241,6 @@ export default function Settings() {
             : <button className="button button-dark" type="button" onClick={enableNotifications}>{t('تفعيل إشعارات التطبيق')}</button>}
         </div>
       </section>
-      {isAndroid && <div className="settings-row"><div><strong>{t('تثبيت تطبيق Android')}</strong><span>{t('نزّل ملف APK من صفحة التنزيل الرسمية لتثبيته على جهازك.')}</span></div></div>}
       <div className="settings-row">
         <div><strong>{t('إعلانات الإدارة')}</strong><span>{t('متابعة التنبيهات الرسمية وحالة قراءتها')}</span></div>
         <Link className="text-link" to="/dashboard/announcements">{t('عرض الإعلانات')}</Link>

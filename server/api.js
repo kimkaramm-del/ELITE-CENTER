@@ -25,7 +25,7 @@ const studentSessionDurationMs = 6 * 60 * 60 * 1000
 const maximumStudentPhotoBytes = 1_500_000
 const accessCodeHashBytes = 64
 const deriveAccessCodeHash = promisify(scrypt)
-const nativeApiOrigins = new Set(['capacitor://localhost', 'https://localhost', 'http://localhost'])
+const flutterAppOrigins = new Set(['https://localhost'])
 
 async function loadLocalEnvironment() {
   if (process.env.ELITE_SKIP_DOTENV === 'true') return
@@ -442,7 +442,7 @@ const apiServer = createServer(async (request, response) => {
     ? []
     : ['http://localhost:5173', 'http://127.0.0.1:5173']
   const allowedOrigins = new Set([
-    ...nativeApiOrigins,
+    ...flutterAppOrigins,
     ...developmentOrigins,
     ...configuredOrigins,
   ])
@@ -879,11 +879,11 @@ const apiServer = createServer(async (request, response) => {
       const expiresAt = Date.now() + studentSessionDurationMs
       studentAccessSessions.set(studentSessionId(sessionToken), { subscriptionId: match.id, email: rawEmail, expiresAt })
       await persistStudentSessions()
-      const isNativeClient = nativeApiOrigins.has(origin)
-      if (!isNativeClient) response.setHeader('set-cookie', studentSessionCookie(sessionToken, request))
+      const isFlutterClient = flutterAppOrigins.has(origin)
+      if (!isFlutterClient) response.setHeader('set-cookie', studentSessionCookie(sessionToken, request))
       return jsonResponse(response, 200, {
         ok: true,
-        ...(isNativeClient ? { sessionToken } : {}),
+        ...(isFlutterClient ? { sessionToken } : {}),
         expiresAt,
         studentName: match.studentName ?? 'طالب',
         grade: match.grade ?? 'البكالوريا',

@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import 'api_cache.dart';
+
 typedef JsonMap = Map<String, dynamic>;
 
 class ApiException implements Exception {
@@ -52,7 +54,12 @@ class EliteApi {
     String method = 'GET',
     Object? body,
     bool authenticated = true,
+    bool cacheable = false,
+    bool forceRefresh = false,
   }) async {
+    final cached = cacheable ? await ApiCache.instance.read(path) : null;
+    if (!forceRefresh && cached?.isFresh == true) return cached!.payload;
+
     final headers = <String, String>{
       'accept': 'application/json',
       'origin': 'https://localhost',
@@ -74,10 +81,12 @@ class EliteApi {
           .then(http.Response.fromStream)
           .timeout(_requestTimeout);
     } on TimeoutException {
+      if (cached?.isUsableOffline == true) return cached!.payload;
       throw const ApiException(
         'انتهت مهلة الاتصال. تحقق من الإنترنت وحاول مجدداً.',
       );
     } on http.ClientException {
+      if (cached?.isUsableOffline == true) return cached!.payload;
       throw const ApiException(
         'تعذر الاتصال بخادم مركز النخبة. تحقق من عنوان الخادم واتصال الإنترنت.',
       );
@@ -97,12 +106,16 @@ class EliteApi {
       if (authenticated) await clearSession();
     }
     if (response.statusCode < 200 || response.statusCode >= 300) {
+      if (response.statusCode >= 500 && cached?.isUsableOffline == true) {
+        return cached!.payload;
+      }
       throw ApiException(
         payload['error'] as String? ??
             'تعذر إكمال الطلب (${response.statusCode}).',
         statusCode: response.statusCode,
       );
     }
+    if (cacheable) await ApiCache.instance.write(path, payload);
     return payload;
   }
 
@@ -132,9 +145,19 @@ class EliteApi {
     await clearSession();
   }
 
-  Future<JsonMap> catalog() => request('/api/catalog', authenticated: false);
+  Future<JsonMap> catalog({bool forceRefresh = false}) => request(
+    '/api/catalog',
+    authenticated: false,
+    cacheable: true,
+    forceRefresh: forceRefresh,
+  );
 
-  Future<JsonMap> news() => request('/api/news', authenticated: false);
+  Future<JsonMap> news({bool forceRefresh = false}) => request(
+    '/api/news',
+    authenticated: false,
+    cacheable: true,
+    forceRefresh: forceRefresh,
+  );
 
   Future<JsonMap> registrationRequest(JsonMap values) => request(
     '/api/requests',

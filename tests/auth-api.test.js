@@ -8,7 +8,6 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, before, test } from 'node:test'
-import { createNativeSessionStore } from '../src/services/nativeSessionStore.js'
 
 const projectDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const requestId = '11111111-1111-4111-8111-111111111111'
@@ -163,18 +162,18 @@ after(async () => {
 })
 
 test('protects request status, supports safe profile edits, and revokes student sessions on logout', async () => {
-  const nativePutPreflight = await fetch(`${baseUrl}/api/profile`, {
+  const flutterPutPreflight = await fetch(`${baseUrl}/api/profile`, {
     method: 'OPTIONS',
     headers: {
-      origin: 'capacitor://localhost',
+      origin: 'https://localhost',
       'access-control-request-method': 'PUT',
       'access-control-request-headers': 'authorization, content-type',
     },
   })
 
-  assert.equal(nativePutPreflight.status, 204)
-  assert.match(nativePutPreflight.headers.get('access-control-allow-methods'), /PUT/)
-  assert.match(nativePutPreflight.headers.get('access-control-allow-methods'), /DELETE/)
+  assert.equal(flutterPutPreflight.status, 204)
+  assert.match(flutterPutPreflight.headers.get('access-control-allow-methods'), /PUT/)
+  assert.match(flutterPutPreflight.headers.get('access-control-allow-methods'), /DELETE/)
 
   const unauthenticatedRequest = await fetch(`${baseUrl}/api/requests/${requestId}`)
   assert.equal(unauthenticatedRequest.status, 401)
@@ -437,24 +436,24 @@ test('protects request status, supports safe profile edits, and revokes student 
   const requestAfterLogoutResponse = await fetch(`${baseUrl}/api/requests/${requestId}`, { headers: authorization })
   assert.equal(requestAfterLogoutResponse.status, 401)
 
-  const nativeLoginResponse = await fetch(`${baseUrl}/api/verify-code`, {
+  const flutterLoginResponse = await fetch(`${baseUrl}/api/verify-code`, {
     method: 'POST',
     headers: {
-      origin: 'capacitor://localhost',
+      origin: 'https://localhost',
       'content-type': 'application/json',
     },
     body: JSON.stringify({ email, code: accessCode }),
   })
-  assert.equal(nativeLoginResponse.status, 200)
-  assert.equal(nativeLoginResponse.headers.get('set-cookie'), null)
-  const { sessionToken: nativeSessionToken } = await nativeLoginResponse.json()
-  assert.match(nativeSessionToken, /^[A-Za-z0-9_-]{43}$/)
-  const sessionsAfterNativeLogin = readStoredData('studentSessions')
-  assert.equal(JSON.stringify(sessionsAfterNativeLogin).includes(nativeSessionToken), false)
-  const nativeSessionResponse = await fetch(`${baseUrl}/api/session`, {
-    headers: { authorization: `Bearer ${nativeSessionToken}` },
+  assert.equal(flutterLoginResponse.status, 200)
+  assert.equal(flutterLoginResponse.headers.get('set-cookie'), null)
+  const { sessionToken: flutterSessionToken } = await flutterLoginResponse.json()
+  assert.match(flutterSessionToken, /^[A-Za-z0-9_-]{43}$/)
+  const sessionsAfterFlutterLogin = readStoredData('studentSessions')
+  assert.equal(JSON.stringify(sessionsAfterFlutterLogin).includes(flutterSessionToken), false)
+  const flutterSessionResponse = await fetch(`${baseUrl}/api/session`, {
+    headers: { authorization: `Bearer ${flutterSessionToken}` },
   })
-  assert.equal(nativeSessionResponse.status, 200)
+  assert.equal(flutterSessionResponse.status, 200)
 
   const disabledAccountLoginResponse = await fetch(`${baseUrl}/api/verify-code`, {
     method: 'POST',
@@ -532,45 +531,6 @@ test('rejects removed digital-course registrations without deleting legacy catal
   assert.equal(response.status, 400)
   const catalog = readStoredData('catalog')
   assert.equal('digitalCourses' in catalog, true)
-})
-
-test('migrates native bearer sessions to secure storage and clears them there', async () => {
-  const secureValues = new Map()
-  const legacyValues = new Map([[
-    'elite-center:student-access-session',
-    JSON.stringify({ token: 'legacy-native-token', expiresAt: Date.now() + 60_000 }),
-  ]])
-  const storage = {
-    async setKeyPrefix(prefix) {
-      assert.equal(prefix, 'elite-center:student')
-    },
-    async get(key) {
-      return secureValues.get(key) ?? null
-    },
-    async set(key, value) {
-      secureValues.set(key, value)
-    },
-    async remove(key) {
-      return secureValues.delete(key)
-    },
-  }
-  const legacyStorage = {
-    getItem(key) {
-      return legacyValues.get(key) ?? null
-    },
-    removeItem(key) {
-      legacyValues.delete(key)
-    },
-  }
-  const sessionStore = createNativeSessionStore()
-  const migratedSession = await sessionStore.initialize(storage, legacyStorage)
-  assert.equal(migratedSession.token, 'legacy-native-token')
-  assert.equal(secureValues.get('access-session').token, 'legacy-native-token')
-  assert.equal(legacyValues.has('elite-center:student-access-session'), false)
-
-  await sessionStore.clear(storage)
-  assert.equal(sessionStore.get(), null)
-  assert.equal(secureValues.has('access-session'), false)
 })
 
 test('protects the web admin API with a session and strips stored access-code hashes', async () => {

@@ -1,5 +1,3 @@
-import { Capacitor } from '@capacitor/core'
-
 const enabledKey = 'elite-center:app-notifications'
 const seenKey = 'elite-center:seen-notifications'
 const preferencesChangedEvent = 'elite-center:notification-preferences-changed'
@@ -21,11 +19,6 @@ function writeSeenNotificationIds(ids) {
   }
 }
 
-async function getNativeNotifications() {
-  const { LocalNotifications } = await import('@capacitor/local-notifications')
-  return LocalNotifications
-}
-
 export function areAppNotificationsEnabled() {
   try {
     return window.localStorage.getItem(enabledKey) === 'true'
@@ -39,11 +32,6 @@ export function notificationPreferencesChangedEventName() {
 }
 
 export async function getAppNotificationPermission() {
-  if (Capacitor.isNativePlatform()) {
-    const notifications = await getNativeNotifications()
-    const result = await notifications.checkPermissions()
-    return result.display
-  }
   if (typeof Notification === 'undefined') return 'unsupported'
   return Notification.permission
 }
@@ -60,20 +48,7 @@ export async function setAppNotificationsEnabled(enabled) {
   }
 
   let permission
-  if (Capacitor.isNativePlatform()) {
-    const notifications = await getNativeNotifications()
-    const current = await notifications.checkPermissions()
-    permission = current.display === 'granted' ? current.display : (await notifications.requestPermissions()).display
-    if (permission === 'granted' && Capacitor.getPlatform() === 'android') {
-      await notifications.createChannel({
-        id: 'elite-center-updates',
-        name: 'تنبيهات مركز النخبة',
-        description: 'إعلانات وتحديثات الطالب من مركز النخبة',
-        importance: 4,
-        visibility: 1,
-      })
-    }
-  } else if (typeof Notification !== 'undefined' && window.isSecureContext) {
+  if (typeof Notification !== 'undefined' && window.isSecureContext) {
     permission = Notification.permission === 'granted'
       ? 'granted'
       : await Notification.requestPermission()
@@ -91,15 +66,6 @@ export async function setAppNotificationsEnabled(enabled) {
   }
 }
 
-function createNotificationId(value) {
-  let hash = 2166136261
-  for (const character of value) {
-    hash ^= character.codePointAt(0)
-    hash = Math.imul(hash, 16777619)
-  }
-  return hash >>> 0
-}
-
 export async function notifyAboutNewStudentNotifications(items) {
   const knownIds = new Set(readSeenNotificationIds())
   const firstCheck = (() => {
@@ -112,23 +78,6 @@ export async function notifyAboutNewStudentNotifications(items) {
   const unseen = items.filter((item) => !knownIds.has(item.id) && !item.isRead)
   writeSeenNotificationIds(items.map((item) => item.id))
   if (firstCheck || !areAppNotificationsEnabled()) return
-
-  if (Capacitor.isNativePlatform()) {
-    const notifications = await getNativeNotifications()
-    const permission = await notifications.checkPermissions()
-    if (permission.display !== 'granted') return
-    await notifications.schedule({
-      notifications: unseen.slice(0, 3).map((item) => ({
-        id: createNotificationId(item.id),
-        title: 'مركز النخبة',
-        body: item.text,
-        channelId: 'elite-center-updates',
-        schedule: { at: new Date(Date.now() + 1000) },
-        extra: { url: '/dashboard/announcements' },
-      })),
-    })
-    return
-  }
 
   if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
   for (const item of unseen.slice(0, 3)) {

@@ -32,10 +32,10 @@ class _HomeScreenState extends State<HomeScreen> {
     _data = _load();
   }
 
-  Future<_HomeData> _load() async {
+  Future<_HomeData> _load({bool forceRefresh = false}) async {
     final results = await Future.wait([
-      EliteApi.instance.catalog(),
-      EliteApi.instance.news(),
+      EliteApi.instance.catalog(forceRefresh: forceRefresh),
+      EliteApi.instance.news(forceRefresh: forceRefresh),
     ]);
     return _HomeData(
       asJsonMap(results[0]),
@@ -44,7 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _refresh() async {
-    final next = _load();
+    final next = _load(forceRefresh: true);
     setState(() => _data = next);
     await next;
   }
@@ -1009,7 +1009,7 @@ class _CatalogScreenState extends State<CatalogScreen> {
   }
 
   Future<void> _reloadCatalog() async {
-    final next = EliteApi.instance.catalog();
+    final next = EliteApi.instance.catalog(forceRefresh: true);
     setState(() => _catalog = next);
     await next;
   }
