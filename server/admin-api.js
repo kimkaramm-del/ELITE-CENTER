@@ -5,6 +5,12 @@ const marksPreviewDurationMs = 15 * 60 * 1000
 const maxAdminLoginAttempts = 8
 const adminLoginWindowMs = 15 * 60 * 1000
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const staffRoles = new Set(['manager', 'teacher', 'counselor'])
+const staffRoleLabels = {
+  manager: 'مدير',
+  teacher: 'أستاذ',
+  counselor: 'موجّه',
+}
 
 function tokenHash(token) {
   return createHash('sha256').update(token).digest('hex')
@@ -118,14 +124,19 @@ export function createAdminApi({
   saveRegistrationRequests,
   readSubscriptions,
   saveSubscriptions,
+  readStaffAccounts,
+  saveStaffAccounts,
   hashAccessCode,
+  matchesAccessCode,
   generateAccessCode,
   revokeStudentSessions,
   communityStore,
   inspectMarksWorkbook,
 }) {
   const sessions = new Map()
+  const staffSessions = new Map()
   const loginAttempts = new Map()
+  const staffLoginAttempts = new Map()
   const previews = new Map()
 
   function authenticated(request) {
@@ -151,10 +162,11 @@ export function createAdminApi({
   }
 
   async function getDashboardData() {
-    const [catalog, requests, subscriptions, community] = await Promise.all([
+    const [catalog, requests, subscriptions, staff, community] = await Promise.all([
       readCatalog(),
       readRegistrationRequests(),
       readSubscriptions(),
+      readStaffAccounts(),
       communityStore.read(),
     ])
     return {
@@ -163,6 +175,7 @@ export function createAdminApi({
         Object.entries(item).filter(([key]) => !key.startsWith('telegram')),
       )),
       subscriptions: subscriptions.codes.map(subscriptionSummary),
+      staff: staff.accounts.map(staffSummary),
       announcements: community.announcements,
       reports: community.reports,
       posts: community.posts,
@@ -171,9 +184,84 @@ export function createAdminApi({
     }
   }
 
+  function staffSummary(account) {
+    const { codeHash: _codeHash, codeSalt: _codeSalt, ...safeAccount } = account
+    return { ...safeAccount, roleLabel: staffRoleLabels[account.role] }
+  }
+
+  async function getStaffSession(token) {
+    if (!token) return null
+    const id = tokenHash(token)
+    const session = staffSessions.get(id)
+    if (!session) return null
+    if (session.expiresAt <= Date.now()) {
+      staffSessions.delete(id)
+      return null
+    }
+    const { accounts } = await readStaffAccounts()
+    const account = accounts.find((item) => item.id === session.accountId && item.active !== false)
+    if (!account) {
+      staffSessions.delete(id)
+      return null
+    }
+    return staffSummary(account)
+  }
+
+  function revokeStaffSessions(accountId) {
+    for (const [id, session] of staffSessions) {
+      if (session.accountId === accountId) staffSessions.delete(id)
+    }
+  }
+
   async function handle(request, response, requestUrl, allowedOrigins) {
     const { pathname } = requestUrl
-    if (!pathname.startsWith('/api/admin/')) return false
+    if (!pathname.startsWith('/api/admin/') && !pathname.startsWith('/api/staff/')) return false
+
+    if (request.method === 'POST' && pathname === '/api/staff/login') {
+      try {
+        const ip = request.socket.remoteAddress ?? 'unknown'
+        const now = Date.now()
+        const attempts = (staffLoginAttempts.get(ip) ?? []).filter((timestamp) => now - timestamp < adminLoginWindowMs)
+        if (attempts.length >= maxAdminLoginAttempts) return jsonResponse(response, 429, { error: 'محاولات كثيرة. انتظر قليلاً ثم حاول مجدداً.' })
+        attempts.push(now)
+        staffLoginAttempts.set(ip, attempts)
+        const payload = await readJsonBody(request, 2000)
+        const email = String(payload?.email ?? '').trim().toLowerCase()
+        const password = typeof payload?.password === 'string' ? payload.password : ''
+        if (!emailPattern.test(email) || password.length < 8 || password.length > 200) {
+          return jsonResponse(response, 401, { error: 'بيانات دخول الموظف غير صحيحة.' })
+        }
+        const { accounts } = await readStaffAccounts()
+        const account = accounts.find((item) => item.email === email && item.active !== false)
+        if (!account || !(await matchesAccessCode(password, account))) {
+          return jsonResponse(response, 401, { error: 'بيانات دخول الموظف غير صحيحة.' })
+        }
+        staffLoginAttempts.delete(ip)
+        const token = randomBytes(32).toString('base64url')
+        staffSessions.set(tokenHash(token), { accountId: account.id, expiresAt: now + sessionDurationMs })
+        return jsonResponse(response, 200, { sessionToken: token, staff: staffSummary(account) })
+      } catch (error) {
+        const invalid = error instanceof SyntaxError || error.message.includes('حجم الطلب')
+        if (!invalid) console.error('Staff login failed:', error.message)
+        return jsonResponse(response, invalid ? 400 : 500, {
+          error: invalid ? 'صيغة الطلب غير صحيحة.' : 'تعذر تسجيل دخول الموظف.',
+        })
+      }
+    }
+
+    if (pathname === '/api/staff/session' && request.method === 'GET') {
+      const token = (request.headers.authorization ?? '').match(/^Bearer\s+(\S+)$/i)?.[1]
+      const staff = await getStaffSession(token)
+      return staff
+        ? jsonResponse(response, 200, { staff })
+        : jsonResponse(response, 401, { error: 'سجّل الدخول بحساب الموظف.' })
+    }
+
+    if (pathname === '/api/staff/logout' && request.method === 'POST') {
+      const token = (request.headers.authorization ?? '').match(/^Bearer\s+(\S+)$/i)?.[1]
+      if (token) staffSessions.delete(tokenHash(token))
+      return jsonResponse(response, 200, { ok: true })
+    }
 
     if (request.method === 'POST' && pathname === '/api/admin/login') {
       try {

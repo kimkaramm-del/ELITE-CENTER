@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 import 'data/api_client.dart';
+import 'data/notification_permission.dart';
 import 'screens/auth_screens.dart';
 import 'screens/home_screen.dart';
 import 'screens/student_screens.dart';
@@ -187,6 +188,32 @@ class _HomeShell extends StatefulWidget {
 class _HomeShellState extends State<_HomeShell> {
   int _selectedIndex = 0;
   bool _showStartupError = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _requestNotificationPermission();
+    });
+  }
+
+  Future<void> _requestNotificationPermission() async {
+    try {
+      await NotificationPermission.requestOnce();
+    } on PlatformException catch (error) {
+      debugPrint('Notification permission request failed: $error');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تعذر طلب إذن الإشعارات.')));
+    } on MissingPluginException catch (error) {
+      debugPrint('Notification permission channel is unavailable: $error');
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('تعذر طلب إذن الإشعارات.')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

@@ -23,8 +23,9 @@ class EliteApi {
   static const _tokenKey = 'elite-center:student-session';
   static const _apiBase = String.fromEnvironment(
     'API_BASE_URL',
-    defaultValue: 'http://10.0.2.2:3001',
+    defaultValue: 'https://elite-center-server.onrender.com',
   );
+  static const _requestTimeout = Duration(seconds: 12);
   static const _secureStorage = FlutterSecureStorage();
 
   final http.Client _client = http.Client();
@@ -71,7 +72,7 @@ class EliteApi {
               ..body = body == null ? '' : jsonEncode(body),
           )
           .then(http.Response.fromStream)
-          .timeout(const Duration(seconds: 25));
+          .timeout(_requestTimeout);
     } on TimeoutException {
       throw const ApiException(
         'انتهت مهلة الاتصال. تحقق من الإنترنت وحاول مجدداً.',
