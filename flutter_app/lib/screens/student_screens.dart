@@ -362,12 +362,26 @@ class _PostCard extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          author['studentName'] as String? ?? 'طالب',
-                          style: const TextStyle(
-                            color: EliteColors.ink,
-                            fontWeight: FontWeight.w700,
-                          ),
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                author['studentName'] as String? ?? 'طالب',
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: EliteColors.ink,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                            if (author['isTeacher'] == true) ...[
+                              const SizedBox(width: 5),
+                              const _RoleBadge(isTeacher: true),
+                            ] else if (author['isVerified'] == true) ...[
+                              const SizedBox(width: 5),
+                              const _RoleBadge(isTeacher: false),
+                            ],
+                          ],
                         ),
                         Text(
                           '${author['grade'] ?? ''}  •  ${_formatDate(post['createdAt'])}',
@@ -541,18 +555,34 @@ class _CommentsSheetState extends State<_CommentsSheet> {
                     final author = asJsonMap(comment['author']);
                     return Align(
                       alignment: AlignmentDirectional.centerStart,
-                      child: Text.rich(
-                        TextSpan(
-                          children: [
-                            TextSpan(
-                              text: '${author['studentName'] ?? 'طالب'}: ',
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w700,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Flexible(
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(
+                                    text: '${author['studentName'] ?? 'طالب'}: ',
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  TextSpan(
+                                    text: comment['text'] as String? ?? '',
+                                  ),
+                                ],
                               ),
                             ),
-                            TextSpan(text: comment['text'] as String? ?? ''),
+                          ),
+                          if (author['isTeacher'] == true) ...[
+                            const SizedBox(width: 5),
+                            const _RoleBadge(isTeacher: true),
+                          ] else if (author['isVerified'] == true) ...[
+                            const SizedBox(width: 5),
+                            const _RoleBadge(isTeacher: false),
                           ],
-                        ),
+                        ],
                       ),
                     );
                   },
@@ -596,6 +626,22 @@ class _CommentsSheetState extends State<_CommentsSheet> {
       ),
     );
   }
+}
+
+class _RoleBadge extends StatelessWidget {
+  const _RoleBadge({required this.isTeacher});
+
+  final bool isTeacher;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: isTeacher ? 'أستاذ معتمد' : 'طالب موثق',
+    child: Icon(
+      isTeacher ? Icons.school_rounded : Icons.verified_rounded,
+      size: 16,
+      color: const Color(0xFF1976D2),
+    ),
+  );
 }
 
 class AccountScreen extends StatefulWidget {
@@ -656,7 +702,7 @@ class _AccountScreenState extends State<AccountScreen> {
       return ListView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 26),
         children: [
-          const PageHeading(
+          PageHeading(
             kicker: 'مساحة الطالب',
             title: 'مساحة الطالب',
             subtitle: 'سجّل الدخول لمتابعة بياناتك الدراسية بأمان.',
@@ -724,16 +770,20 @@ class _AccountScreenState extends State<AccountScreen> {
       future: _profile,
       builder: (context, snapshot) {
         final profile = snapshot.data ?? student;
+        final isTeacher =
+            profile['role'] == 'teacher' || profile['isTeacher'] == true;
         final subjects = (profile['subjects'] as List? ?? const [])
             .whereType<String>()
             .toList();
         return ListView(
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 28),
           children: [
-            const PageHeading(
+            PageHeading(
               kicker: 'الملف الدراسي',
-              title: 'ملفي الدراسي',
-              subtitle: 'بيانات اشتراكك ومساحتك التعليمية.',
+              title: isTeacher ? 'حساب الأستاذ' : 'ملفي الدراسي',
+              subtitle: isTeacher
+                  ? 'حساب معتمد من إدارة مركز النخبة.'
+                  : 'بيانات اشتراكك ومساحتك التعليمية.',
             ),
             const SizedBox(height: 17),
             if (snapshot.hasError)
@@ -749,39 +799,42 @@ class _AccountScreenState extends State<AccountScreen> {
               const education.ShimmerLoadingList(itemCount: 1)
             else
               _StudentIdCard(profile: profile),
-            const SizedBox(height: 12),
-            const SizedBox(height: 21),
-            Text(
-              'الخدمات الدراسية',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 10),
-            _AccountLink(
-              icon: Icons.assessment_outlined,
-              title: 'علاماتي',
-              subtitle: 'النتائج المعتمدة من إدارة المركز',
-              onTap: () => _openSection(context, StudentSection.marks),
-            ),
-            _AccountLink(
-              icon: Icons.campaign_outlined,
-              title: 'إعلانات الإدارة',
-              subtitle: 'التنبيهات والتحديثات الخاصة بالطلاب',
-              onTap: () => _openSection(context, StudentSection.announcements),
-            ),
-            _AccountLink(
-              icon: Icons.receipt_long_outlined,
-              title: 'طلباتي',
-              subtitle: 'حالة طلبات التسجيل والمواد المختارة',
-              onTap: () => _openSection(context, StudentSection.requests),
-            ),
-            _AccountLink(
-              icon: Icons.menu_book_outlined,
-              title: 'المواد المسجلة',
-              subtitle: subjects.isEmpty
-                  ? 'تواصل مع الإدارة لمعرفة مواد اشتراكك'
-                  : subjects.join('، '),
-              onTap: () => _openSection(context, StudentSection.requests),
-            ),
+            if (!isTeacher) ...[
+              const SizedBox(height: 12),
+              const SizedBox(height: 21),
+              Text(
+                'الخدمات الدراسية',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 10),
+              _AccountLink(
+                icon: Icons.assessment_outlined,
+                title: 'علاماتي',
+                subtitle: 'النتائج المعتمدة من إدارة المركز',
+                onTap: () => _openSection(context, StudentSection.marks),
+              ),
+              _AccountLink(
+                icon: Icons.campaign_outlined,
+                title: 'إعلانات الإدارة',
+                subtitle: 'التنبيهات والتحديثات الخاصة بالطلاب',
+                onTap: () =>
+                    _openSection(context, StudentSection.announcements),
+              ),
+              _AccountLink(
+                icon: Icons.receipt_long_outlined,
+                title: 'طلباتي',
+                subtitle: 'حالة طلبات التسجيل والمواد المختارة',
+                onTap: () => _openSection(context, StudentSection.requests),
+              ),
+              _AccountLink(
+                icon: Icons.menu_book_outlined,
+                title: 'المواد المسجلة',
+                subtitle: subjects.isEmpty
+                    ? 'تواصل مع الإدارة لمعرفة مواد اشتراكك'
+                    : subjects.join('، '),
+                onTap: () => _openSection(context, StudentSection.requests),
+              ),
+            ],
             const SizedBox(height: 14),
             if (_logoutError != null)
               education.ErrorBanner(
@@ -836,90 +889,110 @@ class _StudentIdCard extends StatelessWidget {
   final JsonMap profile;
 
   @override
-  Widget build(BuildContext context) => HoverDepth(
-    depth: 10,
-    child: TechnicalBackdrop(
-      child: Padding(
-        padding: const EdgeInsets.all(19),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.badge_outlined,
-                  color: EliteColors.gold,
-                  size: 21,
-                ),
-                const SizedBox(width: 8),
-                const Expanded(
-                  child: Text(
-                    'STUDENT ACCESS CARD',
+  Widget build(BuildContext context) {
+    final isTeacher =
+        profile['role'] == 'teacher' || profile['isTeacher'] == true;
+    return HoverDepth(
+      depth: 10,
+      child: TechnicalBackdrop(
+        child: Padding(
+          padding: const EdgeInsets.all(19),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(
+                    Icons.badge_outlined,
+                    color: EliteColors.gold,
+                    size: 21,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      isTeacher
+                          ? 'TEACHER ACCESS CARD'
+                          : 'STUDENT ACCESS CARD',
+                      textDirection: TextDirection.ltr,
+                      style: const TextStyle(
+                        color: EliteColors.goldPale,
+                        fontSize: 9,
+                        letterSpacing: 1.1,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  DataPill(
+                    icon: isTeacher
+                        ? Icons.school_rounded
+                        : Icons.check_circle_outline,
+                    label: isTeacher ? 'أستاذ معتمد' : 'اشتراك نشط',
+                    color: isTeacher
+                        ? const Color(0xFF90CAF9)
+                        : EliteColors.goldPale,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      profile['name'] as String? ??
+                          profile['studentName'] as String? ??
+                          'الطالب',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 23,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  if (isTeacher) ...[
+                    const SizedBox(width: 6),
+                    const _RoleBadge(isTeacher: true),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                profile['email'] as String? ?? '',
+                textDirection: TextDirection.ltr,
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const SizedBox(height: 16),
+              const Divider(color: Colors.white24, height: 1),
+              const SizedBox(height: 13),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.school_outlined,
+                    size: 16,
+                    color: EliteColors.gold,
+                  ),
+                  const SizedBox(width: 7),
+                  Text(
+                    profile['grade'] as String? ?? 'الصف الدراسي',
+                    style: const TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                  const Spacer(),
+                  const Text(
+                    'ID • VERIFIED',
                     textDirection: TextDirection.ltr,
                     style: TextStyle(
                       color: EliteColors.goldPale,
-                      fontSize: 9,
-                      letterSpacing: 1.1,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 8,
+                      letterSpacing: .9,
                     ),
                   ),
-                ),
-                const DataPill(
-                  icon: Icons.check_circle_outline,
-                  label: 'اشتراك نشط',
-                  color: EliteColors.goldPale,
-                ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Text(
-              profile['name'] as String? ??
-                  profile['studentName'] as String? ??
-                  'الطالب',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 23,
-                fontWeight: FontWeight.w800,
+                ],
               ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              profile['email'] as String? ?? '',
-              textDirection: TextDirection.ltr,
-              style: const TextStyle(color: Colors.white70, fontSize: 12),
-            ),
-            const SizedBox(height: 16),
-            const Divider(color: Colors.white24, height: 1),
-            const SizedBox(height: 13),
-            Row(
-              children: [
-                const Icon(
-                  Icons.school_outlined,
-                  size: 16,
-                  color: EliteColors.gold,
-                ),
-                const SizedBox(width: 7),
-                Text(
-                  profile['grade'] as String? ?? 'الصف الدراسي',
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
-                ),
-                const Spacer(),
-                const Text(
-                  'ID • VERIFIED',
-                  textDirection: TextDirection.ltr,
-                  style: TextStyle(
-                    color: EliteColors.goldPale,
-                    fontSize: 8,
-                    letterSpacing: .9,
-                  ),
-                ),
-              ],
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _AccountLink extends StatelessWidget {

@@ -1,7 +1,8 @@
 {
   "API_BASE_URL": "https://elite-center-server.onrender.com",
-  "FIREBASE_API_KEY": "replace-with-current_key-from-google-services.json",
-  "FIREBASE_APP_ID": "replace-with-mobilesdk_app_id-for-com.elitecenter.elite_center",
-  "FIREBASE_MESSAGING_SENDER_ID": "replace-with-project_number",
-  "FIREBASE_PROJECT_ID": "replace-with-project_id"
+  "FIREBASE_API_KEY": "AIzaSyC0u5zdgHC9QZEC9I-H2lEvQgvfSYyVvqU",
+  "FIREBASE_APP_ID": "1:586560819706:android:b27def93c6324eab309443",
+  "FIREBASE_MESSAGING_SENDER_ID": "586560819706",
+  "FIREBASE_PROJECT_ID": "elite-center-svs",
+  "GOOGLE_SERVER_CLIENT_ID": "586560819706-6h4fk181g3g3c6ff1k1sqriqahbc3e4u.apps.googleusercontent.com"
 }

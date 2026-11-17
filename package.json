@@ -7,27 +7,19 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "vite",
     "server": "node server/api.js",
     "start": "node server/api.js",
-    "build": "vite build",
-    "android:build": "cd flutter_app && flutter build apk --debug --dart-define=API_BASE_URL=https://elite-center-server.onrender.com",
+    "android:build": "cd flutter_app && if [ ! -f firebase-options.json ]; then echo 'Missing flutter_app/firebase-options.json; copy the example and add your Firebase values.'; exit 1; fi && flutter build apk --release --split-per-abi --dart-define-from-file=firebase-options.json",
+    "android:build:debug": "cd flutter_app && if [ ! -f firebase-options.json ]; then echo 'Missing flutter_app/firebase-options.json; copy the example and add your Firebase values.'; exit 1; fi && flutter build apk --debug --dart-define-from-file=firebase-options.json",
     "lint": "oxlint",
-    "test": "node --test",
-    "preview": "vite preview"
+    "test": "node --test"
   },
   "dependencies": {
     "better-sqlite3": "^13.1.1",
     "exceljs": "^4.4.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "react-router-dom": "^7.18.4"
+    "firebase-admin": "^14.5.1"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
-    "@vitejs/plugin-react": "^6.1.1",
-    "oxlint": "^1.81.0",
-    "vite": "^8.3.0"
+    "oxlint": "^1.81.0"
   }
 }

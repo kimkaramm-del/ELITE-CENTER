@@ -1,6 +1,10 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 import '../data/api_client.dart';
+import '../data/google_auth_service.dart';
 import '../theme.dart';
 import '../widgets/education_widgets.dart' as education;
 
@@ -12,42 +16,118 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _formKey = GlobalKey<FormState>();
-  final _email = TextEditingController();
   final _code = TextEditingController();
+  String _role = 'student';
+  String? _firebaseToken;
   bool _isLoading = false;
+  bool _needsCode = false;
+  bool _pendingApproval = false;
   String? _error;
+  String? _message;
 
   @override
   void dispose() {
-    _email.dispose();
     _code.dispose();
     super.dispose();
   }
 
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
+  Future<void> _continueWithGoogle() async {
+    if (_role == 'student' && _needsCode && _code.text.trim().isEmpty) {
+      setState(() => _error = 'أدخل كود المعهد أولاً.');
+      return;
+    }
     setState(() {
       _isLoading = true;
       _error = null;
+      _message = null;
     });
     try {
-      final student = await EliteApi.instance.verifyCode(
-        _email.text,
-        _code.text,
+      final token = _firebaseToken == null
+          ? await GoogleAuthService.signInAndGetIdToken()
+          : await GoogleAuthService.refreshIdToken();
+      final result = await EliteApi.instance.signInWithGoogle(
+        idToken: token,
+        role: _role,
+        instituteCode: _code.text,
       );
-      if (mounted) Navigator.of(context).pop(student);
+      if (!mounted) return;
+      if (result['needsRegistration'] == true) {
+        final email = result['email'] as String?;
+        if (email == null || email.isEmpty) {
+          throw const ApiException('تعذر قراءة بريد حساب Google.');
+        }
+        await Navigator.of(context).push<void>(
+          MaterialPageRoute(
+            builder: (_) => RegistrationScreen(
+              googleEmail: email,
+              googleName: result['studentName'] as String? ?? '',
+            ),
+          ),
+        );
+      } else if (result['needsInstituteCode'] == true) {
+        setState(() {
+          _firebaseToken = token;
+          _needsCode = true;
+          _message =
+              'هذا البريد مسجل لدى المركز. أدخل كود المعهد لربط اشتراكك بحساب Google.';
+        });
+      } else if (result['pendingApproval'] == true) {
+        setState(() {
+          _firebaseToken = token;
+          _pendingApproval = true;
+          _message = _role == 'teacher'
+              ? 'تم إرسال طلب اعتماد حساب الأستاذ. ستظهر صلاحيات الحساب بعد موافقة الإدارة.'
+              : 'طلب تسجيلك قيد المراجعة. سيتم ربط حساب Google تلقائياً بعد الموافقة.';
+        });
+      } else {
+        Navigator.of(context).pop(result);
+      }
     } on ApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
+    } on FirebaseAuthException catch (error) {
+      if (mounted) {
+        setState(
+          () => _error =
+              'تعذر تسجيل الدخول إلى Firebase: ${error.message ?? error.code}',
+        );
+      }
+    } on GoogleSignInException catch (error) {
+      if (mounted) {
+        setState(() => _error = 'تعذر إكمال تسجيل الدخول إلى Google: $error');
+      }
+    } on PlatformException catch (error) {
+      if (mounted) {
+        setState(
+          () =>
+              _error = 'تعذر فتح تسجيل Google: ${error.message ?? error.code}',
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) setState(() => _error = error.message.toString());
+    } on Exception catch (error) {
+      if (mounted) setState(() => _error = 'تعذر تسجيل الدخول: $error');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
+  void _selectRole(String role) {
+    if (_role == role) return;
+    setState(() {
+      _role = role;
+      _firebaseToken = null;
+      _code.clear();
+      _needsCode = false;
+      _pendingApproval = false;
+      _error = null;
+      _message = null;
+    });
+  }
+
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('دخول الطالب'),
+      title: Text(_role == 'teacher' ? 'دخول الأستاذ' : 'دخول الطالب'),
       leading: IconButton(
         onPressed: () => Navigator.of(context).maybePop(),
         icon: const Icon(Icons.arrow_forward_rounded),
@@ -66,9 +146,9 @@ class _LoginScreenState extends State<LoginScreen> {
           const SizedBox(height: 25),
           const PageHeading(
             kicker: 'SECURE ACCESS',
-            title: 'دخول مساحة الطالب',
+            title: 'دخول آمن إلى المركز',
             subtitle:
-                'أدخل البريد الإلكتروني وكود الدخول المرسل من إدارة المركز.',
+                'سجّل الدخول أو أنشئ طلب تسجيل طالب جديد باستخدام Google.',
           ),
           const SizedBox(height: 18),
           HoverDepth(
@@ -76,110 +156,117 @@ class _LoginScreenState extends State<LoginScreen> {
             child: Card(
               child: Padding(
                 padding: const EdgeInsets.all(17),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    children: [
-                      TextFormField(
-                        controller: _email,
-                        keyboardType: TextInputType.emailAddress,
-                        textDirection: TextDirection.ltr,
-                        textAlign: TextAlign.left,
-                        autofillHints: const [AutofillHints.email],
-                        decoration: const InputDecoration(
-                          labelText: 'البريد الإلكتروني',
-                          hintText: 'name@example.com',
-                          prefixIcon: Icon(Icons.alternate_email_rounded),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                          value: 'student',
+                          icon: Icon(Icons.school_outlined),
+                          label: Text('طالب'),
                         ),
-                        validator: (value) {
-                          final email = value?.trim() ?? '';
-                          return RegExp(
-                                r'^[^\s@]+@[^\s@]+\.[^\s@]+$',
-                              ).hasMatch(email)
-                              ? null
-                              : 'أدخل بريداً إلكترونياً صالحاً.';
-                        },
-                      ),
-                      const SizedBox(height: 13),
-                      TextFormField(
+                        ButtonSegment(
+                          value: 'teacher',
+                          icon: Icon(Icons.school_outlined),
+                          label: Text('أستاذ'),
+                        ),
+                      ],
+                      selected: {_role},
+                      onSelectionChanged: _isLoading
+                          ? null
+                          : (selection) => _selectRole(selection.first),
+                    ),
+                    const SizedBox(height: 17),
+                    if (_needsCode && _role == 'student') ...[
+                      TextField(
                         controller: _code,
                         textCapitalization: TextCapitalization.characters,
                         textDirection: TextDirection.ltr,
                         textAlign: TextAlign.left,
                         autofillHints: const [AutofillHints.oneTimeCode],
                         decoration: const InputDecoration(
-                          labelText: 'كود الدخول',
+                          labelText: 'كود المعهد',
                           hintText: 'ELITE-XXXXXXXX',
                           prefixIcon: Icon(Icons.key_rounded),
                         ),
-                        validator: (value) =>
-                            (value?.trim().isNotEmpty ?? false)
-                            ? null
-                            : 'أدخل كود الدخول المرسل إليك.',
                       ),
-                      if (_error != null) ...[
-                        const SizedBox(height: 13),
-                        InlineMessage(_error!, isError: true),
-                      ],
-                      const SizedBox(height: 18),
-                      FilledButton(
-                        onPressed: _isLoading ? null : _submit,
-                        child: _isLoading
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Text('دخول الطالب'),
-                      ),
-                      const SizedBox(height: 13),
-                      const Row(
-                        children: [
-                          Icon(
-                            Icons.info_outline,
-                            size: 16,
-                            color: EliteColors.muted,
-                          ),
-                          SizedBox(width: 7),
-                          Expanded(
-                            child: Text(
-                              'الكود مرتبط ببريدك المسجّل، وتحفظ الجلسة في التخزين الآمن للجهاز.',
-                              style: TextStyle(
-                                color: EliteColors.muted,
-                                fontSize: 11,
-                                height: 1.5,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
+                      const SizedBox(height: 14),
                     ],
-                  ),
+                    if (_pendingApproval && _message != null)
+                      InlineMessage(_message!)
+                    else if (_message != null)
+                      InlineMessage(_message!),
+                    if (_error != null) ...[
+                      const SizedBox(height: 12),
+                      InlineMessage(_error!, isError: true),
+                    ],
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: _isLoading ? null : _continueWithGoogle,
+                      icon: _isLoading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : Icon(
+                              _pendingApproval
+                                  ? Icons.refresh_rounded
+                                  : Icons.login_rounded,
+                            ),
+                      label: Text(
+                        _isLoading
+                            ? 'جارٍ التحقق...'
+                            : _pendingApproval
+                            ? 'تحديث حالة التسجيل'
+                            : _needsCode
+                            ? 'تأكيد كود المعهد'
+                            : _role == 'teacher'
+                            ? 'المتابعة باستخدام Google'
+                            : 'الدخول باستخدام Google',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      _role == 'teacher'
+                          ? 'حساب الأستاذ لا يُفعّل ولا تظهر شارة الأستاذ قبل موافقة إدارة المركز.'
+                          : 'يجب أن يطابق بريد Google البريد المسجل لدى المركز. تحفظ جلسة API في التخزين الآمن.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: EliteColors.muted,
+                        fontSize: 11,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
           ),
-          const SizedBox(height: 22),
-          OutlinedButton.icon(
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute<JsonMap>(
-                builder: (_) => const RegistrationScreen(),
+          if (_role == 'student') ...[
+            const SizedBox(height: 22),
+            OutlinedButton.icon(
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute<JsonMap>(
+                  builder: (_) => const RegistrationScreen(),
+                ),
+              ),
+              icon: const Icon(Icons.person_add_alt_1_rounded),
+              label: const Text('طالب جديد؟ أرسل طلب تسجيل'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: EliteColors.wine,
+                minimumSize: const Size.fromHeight(52),
+                side: const BorderSide(color: EliteColors.line),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
               ),
             ),
-            icon: const Icon(Icons.person_add_alt_1_rounded),
-            label: const Text('طالب جديد؟ أرسل طلب تسجيل'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: EliteColors.wine,
-              minimumSize: const Size.fromHeight(52),
-              side: const BorderSide(color: EliteColors.line),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-            ),
-          ),
+          ],
         ],
       ),
     ),
@@ -187,7 +274,10 @@ class _LoginScreenState extends State<LoginScreen> {
 }
 
 class RegistrationScreen extends StatefulWidget {
-  const RegistrationScreen({super.key});
+  const RegistrationScreen({super.key, this.googleEmail, this.googleName});
+
+  final String? googleEmail;
+  final String? googleName;
 
   @override
   State<RegistrationScreen> createState() => _RegistrationScreenState();
@@ -208,6 +298,8 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.googleEmail != null) _email.text = widget.googleEmail!;
+    if (widget.googleName != null) _name.text = widget.googleName!;
     _catalog = EliteApi.instance.catalog();
   }
 
@@ -237,22 +329,36 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
       _requestId = null;
     });
     try {
-      final result = await EliteApi.instance.registrationRequest({
+      final values = <String, dynamic>{
         'name': _name.text.trim(),
         'phone': _phone.text.trim(),
         'email': _email.text.trim(),
         'gradeId': _gradeId,
         'programType': 'center',
         'subjectIds': _selectedSubjects.toList(),
-      });
+      };
+      if (widget.googleEmail != null) {
+        values['googleIdToken'] = await GoogleAuthService.refreshIdToken();
+      }
+      final result = await EliteApi.instance.registrationRequest(values);
       if (!mounted) return;
       setState(() {
         _requestId = result['id'] as String?;
-        _message =
-            'وصل طلبك إلى إدارة المركز. ستراجع الإدارة الطلب وتشاركك كود الدخول عند الموافقة.';
+        _message = widget.googleEmail == null
+            ? 'وصل طلبك إلى إدارة المركز. ستراجع الإدارة الطلب وتشاركك كود الدخول عند الموافقة.'
+            : 'وصل طلبك المرتبط بحساب Google. بعد موافقة الإدارة سيتم ربط الحساب تلقائياً.';
       });
     } on ApiException catch (error) {
       if (mounted) setState(() => _message = error.message);
+    } on FirebaseAuthException catch (error) {
+      if (mounted) {
+        setState(
+          () => _message =
+              'تعذر التحقق من حساب Google: ${error.message ?? error.code}',
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) setState(() => _message = error.message.toString());
     } finally {
       if (mounted) setState(() => _isSending = false);
     }
@@ -318,7 +424,7 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
             const PortalHero(
               kicker: 'NEW STUDENT / ENROLLMENT',
               title: 'ابدأ رحلتك معنا',
-              subtitle: 'أدخل بياناتك واختر الصف والمواد لإرسال طلبك للمراجعة.',
+              subtitle: 'أكمل بياناتك واختر الصف والمواد لإرسال طلبك للمراجعة.',
               icon: Icons.auto_awesome_outlined,
             ),
             const SizedBox(height: 19),
@@ -377,11 +483,15 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                             keyboardType: TextInputType.emailAddress,
                             textDirection: TextDirection.ltr,
                             textAlign: TextAlign.left,
+                            readOnly: widget.googleEmail != null,
                             autofillHints: const [AutofillHints.email],
-                            decoration: const InputDecoration(
+                            decoration: InputDecoration(
                               labelText: 'البريد الإلكتروني',
                               hintText: 'name@example.com',
                               prefixIcon: Icon(Icons.alternate_email_rounded),
+                              helperText: widget.googleEmail == null
+                                  ? null
+                                  : 'سيتم ربط الطلب ببريد Google الموثق.',
                             ),
                             validator: (value) =>
                                 RegExp(
@@ -485,7 +595,11 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                                       color: Colors.white,
                                     ),
                                   )
-                                : const Text('إرسال طلب التسجيل'),
+                                : Text(
+                                    widget.googleEmail == null
+                                        ? 'إرسال طلب التسجيل'
+                                        : 'إرسال طلب التسجيل عبر Google',
+                                  ),
                           ),
                         ],
                       ),
@@ -494,8 +608,10 @@ class _RegistrationScreenState extends State<RegistrationScreen> {
                 ),
               ),
             const SizedBox(height: 18),
-            const Text(
-              'هذا طلب تسجيل للمراجعة وليس حساباً مفعّلاً. عند الموافقة ترسل الإدارة كود الدخول المرتبط ببريدك.',
+            Text(
+              widget.googleEmail == null
+                  ? 'هذا طلب تسجيل للمراجعة وليس حساباً مفعّلاً. عند الموافقة ترسل الإدارة كود الدخول المرتبط ببريدك.'
+                  : 'هذا طلب تسجيل للمراجعة وليس حساباً مفعّلاً. عند الموافقة سيتم ربط حساب Google تلقائياً.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: EliteColors.muted,

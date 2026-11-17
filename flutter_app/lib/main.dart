@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'data/api_client.dart';
 import 'data/firebase_messaging_service.dart';
+import 'data/google_auth_service.dart';
 import 'data/notification_permission.dart';
 import 'screens/auth_screens.dart';
 import 'screens/home_screen.dart';
@@ -75,6 +76,7 @@ class _EliteCenterAppState extends State<EliteCenterApp> {
 
   Future<void> _logout() async {
     await EliteApi.instance.logout();
+    await GoogleAuthService.signOut();
     if (mounted) {
       setState(() {
         _student = null;
@@ -243,32 +245,6 @@ class _HomeShellState extends State<_HomeShell> {
     ].whereType<String>().where((part) => part.isNotEmpty).join('\n');
     if (text.isEmpty || !mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _requestNotificationPermission();
-    });
-  }
-
-  Future<void> _requestNotificationPermission() async {
-    try {
-      await NotificationPermission.requestOnce();
-    } on PlatformException catch (error) {
-      debugPrint('Notification permission request failed: $error');
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('تعذر طلب إذن الإشعارات.')));
-    } on MissingPluginException catch (error) {
-      debugPrint('Notification permission channel is unavailable: $error');
-      if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('تعذر طلب إذن الإشعارات.')));
-    }
   }
 
   @override

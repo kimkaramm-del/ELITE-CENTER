@@ -9,12 +9,22 @@ class EliteFirebaseOptions {
     'FIREBASE_MESSAGING_SENDER_ID',
   );
   static const projectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
+  static const googleServerClientId = String.fromEnvironment(
+    'GOOGLE_SERVER_CLIENT_ID',
+  );
+
+  static bool _hasValue(String value) =>
+      value.isNotEmpty && !value.startsWith('replace-with-');
 
   static bool get isConfigured =>
-      apiKey.isNotEmpty &&
-      appId.isNotEmpty &&
-      messagingSenderId.isNotEmpty &&
-      projectId.isNotEmpty;
+      _hasValue(apiKey) &&
+      _hasValue(appId) &&
+      _hasValue(messagingSenderId) &&
+      _hasValue(projectId);
+
+  static bool get isGoogleSignInConfigured =>
+      _hasValue(googleServerClientId) &&
+      googleServerClientId.endsWith('.apps.googleusercontent.com');
 
   static FirebaseOptions get android => const FirebaseOptions(
     apiKey: apiKey,

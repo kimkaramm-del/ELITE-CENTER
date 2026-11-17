@@ -1,16 +1,16 @@
 import 'dart:async';
 
-import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import '../firebase_options.dart';
+import 'firebase_service.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  if (Firebase.apps.isEmpty && EliteFirebaseOptions.isConfigured) {
-    await Firebase.initializeApp(options: EliteFirebaseOptions.android);
+  if (EliteFirebaseOptions.isConfigured) {
+    await FirebaseService.initialize();
   }
 }
 
@@ -29,6 +29,7 @@ class FirebaseMessagingService {
       _foregroundMessages.stream;
 
   static Future<bool> initialize() async {
+    if (_initialized) return true;
     if (!EliteFirebaseOptions.isConfigured) {
       debugPrint(
         'Firebase is not configured. Add the FIREBASE_* Dart defines to enable FCM.',
@@ -36,7 +37,7 @@ class FirebaseMessagingService {
       return false;
     }
 
-    await Firebase.initializeApp(options: EliteFirebaseOptions.android);
+    await FirebaseService.initialize();
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
     FirebaseMessaging.onMessage.listen(
       _foregroundMessages.add,

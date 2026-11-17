@@ -119,16 +119,30 @@ class EliteApi {
     return payload;
   }
 
-  Future<JsonMap> verifyCode(String email, String code) async {
+  Future<JsonMap> signInWithGoogle({
+    required String idToken,
+    required String role,
+    String instituteCode = '',
+  }) async {
     final result = await request(
-      '/api/verify-code',
+      '/api/auth/google/$role',
       method: 'POST',
       authenticated: false,
-      body: {'email': email.trim().toLowerCase(), 'code': code.trim()},
+      body: {
+        'idToken': idToken,
+        if (role == 'student' && instituteCode.trim().isNotEmpty)
+          'instituteCode': instituteCode.trim(),
+      },
     );
+    if (result['needsRegistration'] == true ||
+        result['needsInstituteCode'] == true ||
+        result['pendingApproval'] == true) {
+      return result;
+    }
+
     final token = result['sessionToken'];
     if (token is! String || token.isEmpty) {
-      throw const ApiException('لم يُنشئ الخادم جلسة آمنة لهذا الجهاز.');
+      throw const ApiException('لم يُنشئ الخادم جلسة آمنة لهذا الحساب.');
     }
     await _secureStorage.write(key: _tokenKey, value: token);
     _token = token;

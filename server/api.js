@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto'
-import { mkdir, readFile, stat, unlink, writeFile } from 'node:fs/promises'
-import { dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { createCommunityStore } from './community-store.js'
@@ -9,6 +9,8 @@ import { inspectMarksWorkbook } from './marks-import.js'
 import { initializeRuntimeData, migrateLegacyData } from './runtime-data.js'
 import { createSqliteStore } from './sqlite-store.js'
 import { createAdminApi } from './admin-api.js'
+import { FirebaseConfigurationError, FirebaseIdentityError, verifyGoogleIdentityToken } from './firebase-auth.js'
+import { googleStudentRegistrationState } from './google-student-registration.js'
 
 const serverDirectory = dirname(fileURLToPath(import.meta.url))
 const projectDirectory = resolve(serverDirectory, '..')
@@ -56,6 +58,15 @@ async function readRegistrationRequests() {
 
 async function saveRegistrationRequests(requests) {
   dataStore.set('requests', requests)
+}
+
+async function readStaffAccounts() {
+  const payload = dataStore.get('staffAccounts', { accounts: [] })
+  return { accounts: Array.isArray(payload.accounts) ? payload.accounts : [] }
+}
+
+async function saveStaffAccounts(accounts) {
+  dataStore.set('staffAccounts', { accounts })
 }
 
 async function hashAccessCode(code) {
@@ -147,6 +158,17 @@ async function revokeStudentSessions(subscriptionId) {
   if (didRevoke) await persistStudentSessions()
 }
 
+async function revokeTeacherSessions(uid) {
+  let didRevoke = false
+  for (const [token, session] of studentAccessSessions) {
+    if (session.role === 'teacher' && session.teacherUid === uid) {
+      await revokeStudentSession(token)
+      didRevoke = true
+    }
+  }
+  if (didRevoke) await persistStudentSessions()
+}
+
 async function readNewsReactions() {
   const payload = dataStore.get('newsReactions', { reactions: {} })
   return payload.reactions && typeof payload.reactions === 'object' ? payload.reactions : {}
@@ -163,6 +185,43 @@ async function readStudentProfiles() {
 
 async function saveStudentProfiles(profiles) {
   dataStore.set('studentProfiles', { profiles })
+}
+
+async function readFirebaseStudentLinks() {
+  const payload = dataStore.get('firebaseStudentLinks', { users: {} })
+  const users = Object.create(null)
+  if (payload.users && typeof payload.users === 'object' && !Array.isArray(payload.users)) {
+    Object.assign(users, payload.users)
+  }
+  return users
+}
+
+async function saveFirebaseStudentLinks(users) {
+  dataStore.set('firebaseStudentLinks', { users })
+}
+
+async function unlinkFirebaseStudent(subscriptionId) {
+  const links = await readFirebaseStudentLinks()
+  let changed = false
+  for (const [uid, link] of Object.entries(links)) {
+    if (link.subscriptionId !== subscriptionId) continue
+    delete links[uid]
+    changed = true
+  }
+  if (changed) await saveFirebaseStudentLinks(links)
+}
+
+async function readTeacherProfiles() {
+  const payload = dataStore.get('teacherProfiles', { teachers: {} })
+  const teachers = Object.create(null)
+  if (payload.teachers && typeof payload.teachers === 'object' && !Array.isArray(payload.teachers)) {
+    Object.assign(teachers, payload.teachers)
+  }
+  return teachers
+}
+
+async function saveTeacherProfiles(teachers) {
+  dataStore.set('teacherProfiles', { teachers })
 }
 
 function parseStudentPhoto(dataUrl) {
@@ -270,10 +329,18 @@ async function loadStudentSessions() {
   const payload = dataStore.get('studentSessions', { sessions: [] })
   const sessions = Array.isArray(payload.sessions) ? payload.sessions : []
   for (const session of sessions) {
-    if (/^[a-f0-9]{64}$/.test(session.id ?? '') &&
-        /^[a-f0-9-]{36}$/.test(session.subscriptionId ?? '') &&
-        /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(session.email ?? '') &&
-        Number.isFinite(session.expiresAt) && session.expiresAt > Date.now()) {
+    const validBase = /^[a-f0-9]{64}$/.test(session.id ?? '') &&
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(session.email ?? '') &&
+      Number.isFinite(session.expiresAt) && session.expiresAt > Date.now()
+    if (validBase && session.role === 'teacher' &&
+        /^[A-Za-z0-9_.:-]{1,128}$/.test(session.teacherUid ?? '')) {
+      studentAccessSessions.set(session.id, {
+        role: 'teacher',
+        teacherUid: session.teacherUid,
+        email: session.email,
+        expiresAt: session.expiresAt,
+      })
+    } else if (validBase && /^[a-f0-9-]{36}$/.test(session.subscriptionId ?? '')) {
       studentAccessSessions.set(session.id, {
         subscriptionId: session.subscriptionId,
         email: session.email,
@@ -292,6 +359,19 @@ function studentSessionCookie(token, request, clear = false) {
   const secure = Boolean(request.socket.encrypted) ||
     process.env.TRUST_PROXY === 'true' && request.headers['x-forwarded-proto'] === 'https'
   return `elite_student_session=${clear ? '' : encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${clear ? 0 : Math.floor(studentSessionDurationMs / 1000)}${secure ? '; Secure' : ''}`
+}
+
+async function issueAccessSession(request, response, session) {
+  const sessionToken = randomBytes(32).toString('base64url')
+  const expiresAt = Date.now() + studentSessionDurationMs
+  studentAccessSessions.set(studentSessionId(sessionToken), { ...session, expiresAt })
+  await persistStudentSessions()
+  const isFlutterClient = flutterAppOrigins.has(request.headers.origin)
+  if (!isFlutterClient) response.setHeader('set-cookie', studentSessionCookie(sessionToken, request))
+  return {
+    sessionToken: isFlutterClient ? sessionToken : undefined,
+    expiresAt,
+  }
 }
 
 function requiresCookieCsrfValidation(request) {
@@ -332,6 +412,48 @@ async function authenticateStudentRequest(request, requestUrl) {
   return { token, session, subscription }
 }
 
+async function authenticateCommunityRequest(request, requestUrl) {
+  const token = getAccessToken(request, requestUrl)
+  const session = getValidAccessSession(token)
+  if (!session) return { error: { status: 401, message: 'سجّل الدخول للوصول إلى الموجز.' } }
+  if (session.role === 'teacher') {
+    const teachers = await readTeacherProfiles()
+    const teacher = teachers[session.teacherUid]
+    if (!teacher || teacher.active !== true || teacher.email !== session.email) {
+      await revokeStudentSession(token)
+      return { error: { status: 403, message: 'حساب الأستاذ غير معتمد أو موقوف.' } }
+    }
+    return {
+      token,
+      session,
+      role: 'teacher',
+      ownerId: `teacher:${session.teacherUid}`,
+      author: {
+        studentName: teacher.displayName,
+        grade: teacher.specialty || 'أستاذ',
+        role: 'teacher',
+        isTeacher: true,
+        isVerified: true,
+        teacherUid: session.teacherUid,
+      },
+    }
+  }
+  const authenticated = await authenticateStudentRequest(request, requestUrl)
+  if (authenticated.error) return authenticated
+  const { subscription } = authenticated
+  return {
+    ...authenticated,
+    role: 'student',
+    ownerId: subscription.id,
+    author: {
+      studentName: String(subscription.studentName ?? 'طالب').slice(0, 100),
+      grade: String(subscription.grade ?? '').slice(0, 100),
+      role: 'student',
+      isVerified: true,
+    },
+  }
+}
+
 function accountRequestResponse(accountRequest) {
   return {
     id: accountRequest.id,
@@ -344,78 +466,29 @@ function accountRequestResponse(accountRequest) {
   }
 }
 
+function communityAuthorResponse(author, teachers = null) {
+  const { teacherUid, ...safeAuthor } = author ?? {}
+  const teacher = teacherUid ? teachers?.[teacherUid] : null
+  const hasCurrentTeacherProfile = teacherUid && teachers !== null
+  const isTeacher = safeAuthor.role === 'teacher' && safeAuthor.isTeacher === true &&
+    (!hasCurrentTeacherProfile || teacher?.active === true)
+  return {
+    ...safeAuthor,
+    ...(isTeacher && teacher ? {
+      studentName: teacher.displayName,
+      grade: teacher.specialty || 'أستاذ',
+    } : {}),
+    isTeacher,
+    isVerified: isTeacher || author?.role !== 'teacher',
+  }
+}
+
 function jsonResponse(response, statusCode, payload) {
   response.writeHead(statusCode, {
     'content-type': 'application/json; charset=utf-8',
     'cache-control': 'no-store',
   })
   response.end(JSON.stringify(payload))
-}
-
-async function serveWebApp(request, response, pathname) {
-  if (request.method !== 'GET' && request.method !== 'HEAD') return false
-
-  let decodedPath
-  try {
-    decodedPath = decodeURIComponent(pathname)
-  } catch {
-    response.writeHead(400)
-    response.end()
-    return true
-  }
-  if (decodedPath === '/admin/') {
-    response.writeHead(308, { location: '/admin' })
-    response.end()
-    return true
-  }
-
-  const webDirectory = resolve(projectDirectory, 'dist')
-  const requestedPath = resolve(webDirectory, `.${decodedPath}`)
-  const relativePath = relative(webDirectory, requestedPath)
-  if (relativePath === '..' || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) {
-    response.writeHead(404)
-    response.end()
-    return true
-  }
-
-  let filePath = requestedPath
-  try {
-    if (!(await stat(filePath)).isFile()) {
-      filePath = resolve(webDirectory, 'index.html')
-    }
-  } catch (error) {
-    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
-    if (extname(decodedPath)) return false
-    filePath = resolve(webDirectory, 'index.html')
-  }
-
-  let contents
-  try {
-    contents = await readFile(filePath)
-  } catch (error) {
-    if (error.code === 'ENOENT') return false
-    throw error
-  }
-
-  const contentTypes = {
-    '.css': 'text/css; charset=utf-8',
-    '.html': 'text/html; charset=utf-8',
-    '.ico': 'image/x-icon',
-    '.js': 'text/javascript; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.png': 'image/png',
-    '.svg': 'image/svg+xml',
-    '.webp': 'image/webp',
-    '.woff': 'font/woff',
-    '.woff2': 'font/woff2',
-  }
-  response.writeHead(200, {
-    'content-type': contentTypes[extname(filePath)] ?? 'application/octet-stream',
-    'content-length': contents.length,
-    'cache-control': 'no-cache',
-  })
-  response.end(request.method === 'HEAD' ? undefined : contents)
-  return true
 }
 
 const adminApi = createAdminApi({
@@ -427,9 +500,16 @@ const adminApi = createAdminApi({
   saveRegistrationRequests,
   readSubscriptions,
   saveSubscriptions,
+  readStaffAccounts,
+  saveStaffAccounts,
   hashAccessCode,
+  matchesAccessCode,
   generateAccessCode,
   revokeStudentSessions,
+  readTeacherProfiles,
+  saveTeacherProfiles,
+  revokeTeacherSessions,
+  unlinkFirebaseStudent,
   communityStore,
   inspectMarksWorkbook,
 })
@@ -458,8 +538,6 @@ const apiServer = createServer(async (request, response) => {
     response.writeHead(origin && !allowedOrigins.has(origin) ? 403 : 204)
     return response.end()
   }
-  if (!requestUrl.pathname.startsWith('/api') &&
-      await serveWebApp(request, response, requestUrl.pathname)) return
   if (requestUrl.pathname.startsWith('/api/admin/')) {
     await adminApi.handle(request, response, requestUrl, allowedOrigins)
     return
@@ -529,17 +607,20 @@ const apiServer = createServer(async (request, response) => {
       requestUrl.pathname === '/api/marks') {
     let authenticated
     try {
-      authenticated = await authenticateStudentRequest(request, requestUrl)
+      authenticated = await authenticateCommunityRequest(request, requestUrl)
     } catch (error) {
       console.error('Student session lookup failed for community request:', error.message)
       return jsonResponse(response, 500, { error: 'تعذر التحقق من جلسة الطالب.' })
     }
     if (authenticated.error) return jsonResponse(response, authenticated.error.status, { error: authenticated.error.message })
-    const { subscription } = authenticated
-    const ownerId = subscription.id
+    const { role, ownerId, author } = authenticated
+    if (role === 'teacher' && !requestUrl.pathname.startsWith('/api/community/')) {
+      return jsonResponse(response, 403, { error: 'هذه الخدمة متاحة للطلاب فقط.' })
+    }
     try {
       if (request.method === 'GET' && requestUrl.pathname === '/api/community/posts') {
         const data = await communityStore.read()
+        const teachers = await readTeacherProfiles()
         const offset = Number(requestUrl.searchParams.get('cursor') ?? 0)
         const query = (requestUrl.searchParams.get('q') ?? '').trim().toLocaleLowerCase('ar')
         if (query.length > 100) return jsonResponse(response, 400, { error: 'عبارة البحث طويلة جداً.' })
@@ -550,28 +631,29 @@ const apiServer = createServer(async (request, response) => {
           id: post.id,
           text: post.text,
           createdAt: post.createdAt,
-          author: post.author,
+          author: communityAuthorResponse(post.author, teachers),
           reactionCount: post.likes.length,
           isLiked: post.likes.includes(ownerId),
           isSaved: data.bookmarks.some((bookmark) => bookmark.subscriptionId === ownerId && bookmark.postId === post.id),
-          comments: post.comments.slice(-20).map(({ id, author, text, createdAt }) => ({ id, author, text, createdAt })),
+          comments: post.comments.slice(-20).map(({ id, author, text, createdAt }) => ({ id, author: communityAuthorResponse(author, teachers), text, createdAt })),
           commentCount: post.comments.length,
         }))
         return jsonResponse(response, 200, { items, nextCursor: offset + page.length < visible.length ? offset + page.length : null })
       }
       if (request.method === 'GET' && requestUrl.pathname === '/api/community/mine') {
         const data = await communityStore.read()
+        const teachers = await readTeacherProfiles()
         const ownPosts = data.posts.filter((post) => post.subscriptionId === ownerId && post.hiddenAt == null)
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))
         const items = ownPosts.slice(0, 30).map((post) => ({
           id: post.id,
           text: post.text,
           createdAt: post.createdAt,
-          author: post.author,
+          author: communityAuthorResponse(post.author, teachers),
           reactionCount: post.likes.length,
           isLiked: post.likes.includes(ownerId),
           isSaved: data.bookmarks.some((bookmark) => bookmark.subscriptionId === ownerId && bookmark.postId === post.id),
-          comments: post.comments.slice(-20).map(({ id, author, text, createdAt }) => ({ id, author, text, createdAt })),
+          comments: post.comments.slice(-20).map(({ id, author, text, createdAt }) => ({ id, author: communityAuthorResponse(author, teachers), text, createdAt })),
           commentCount: post.comments.length,
         }))
         return jsonResponse(response, 200, {
@@ -587,7 +669,7 @@ const apiServer = createServer(async (request, response) => {
         const post = {
           id: randomUUID(),
           subscriptionId: ownerId,
-          author: { studentName: String(subscription.studentName ?? 'طالب').slice(0, 100), grade: String(subscription.grade ?? '').slice(0, 100) },
+          author: { ...author },
           text,
           createdAt: new Date().toISOString(),
           likes: [],
@@ -595,7 +677,7 @@ const apiServer = createServer(async (request, response) => {
           hiddenAt: null,
         }
         await communityStore.update((data) => { data.posts.push(post) })
-        return jsonResponse(response, 201, { item: { id: post.id, text: post.text, createdAt: post.createdAt, author: post.author, reactionCount: 0, isLiked: false, isSaved: false, comments: [], commentCount: 0 } })
+        return jsonResponse(response, 201, { item: { id: post.id, text: post.text, createdAt: post.createdAt, author: communityAuthorResponse(post.author), reactionCount: 0, isLiked: false, isSaved: false, comments: [], commentCount: 0 } })
       }
       const postRoute = requestUrl.pathname.match(/^\/api\/community\/posts\/([\da-f-]{36})(?:\/(reaction|comments|bookmark|report))?$/i)
       if (postRoute) {
@@ -633,7 +715,7 @@ const apiServer = createServer(async (request, response) => {
           const comment = {
             id: randomUUID(),
             subscriptionId: ownerId,
-            author: { studentName: String(subscription.studentName ?? 'طالب').slice(0, 100), grade: String(subscription.grade ?? '').slice(0, 100) },
+            author,
             text,
             createdAt: new Date().toISOString(),
           }
@@ -644,7 +726,7 @@ const apiServer = createServer(async (request, response) => {
             return true
           })
           if (!added) return jsonResponse(response, 404, { error: 'المنشور غير موجود.' })
-          return jsonResponse(response, 201, { item: { id: comment.id, author: comment.author, text: comment.text, createdAt: comment.createdAt } })
+          return jsonResponse(response, 201, { item: { id: comment.id, author: communityAuthorResponse(comment.author), text: comment.text, createdAt: comment.createdAt } })
         }
         if (request.method === 'POST' && action === 'bookmark') {
           const saved = await communityStore.update((current) => {
@@ -673,13 +755,14 @@ const apiServer = createServer(async (request, response) => {
       }
       if (request.method === 'GET' && requestUrl.pathname === '/api/community/saved') {
         const data = await communityStore.read()
+        const teachers = await readTeacherProfiles()
         const savedIds = new Set(data.bookmarks.filter((bookmark) => bookmark.subscriptionId === ownerId).map((bookmark) => bookmark.postId))
         const items = data.posts.filter((post) => savedIds.has(post.id) && post.hiddenAt == null)
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
           .map((post) => ({
-            id: post.id, text: post.text, createdAt: post.createdAt, author: post.author,
+            id: post.id, text: post.text, createdAt: post.createdAt, author: communityAuthorResponse(post.author, teachers),
             reactionCount: post.likes.length, isLiked: post.likes.includes(ownerId), isSaved: true,
-            comments: post.comments.slice(-20).map(({ id, author, text, createdAt }) => ({ id, author, text, createdAt })),
+            comments: post.comments.slice(-20).map(({ id, author, text, createdAt }) => ({ id, author: communityAuthorResponse(author, teachers), text, createdAt })),
             commentCount: post.comments.length,
           }))
         return jsonResponse(response, 200, { items })
@@ -744,6 +827,27 @@ const apiServer = createServer(async (request, response) => {
     const session = getValidAccessSession(token)
     if (!session) return jsonResponse(response, 401, { error: 'سجّل الدخول لعرض ملفك الشخصي.' })
     try {
+      if (session.role === 'teacher') {
+        const teachers = await readTeacherProfiles()
+        const teacher = teachers[session.teacherUid]
+        if (!teacher || teacher.active !== true || teacher.email !== session.email) {
+          await revokeStudentSession(token)
+          return jsonResponse(response, 403, { error: 'حساب الأستاذ غير معتمد أو موقوف.' })
+        }
+        if (request.method === 'PUT') return jsonResponse(response, 403, { error: 'تُعدّل بيانات حساب الأستاذ من إدارة المركز.' })
+        return jsonResponse(response, 200, {
+          email: teacher.email,
+          name: teacher.displayName,
+          phone: '',
+          grade: teacher.specialty || 'أستاذ',
+          title: teacher.title ?? '',
+          role: 'teacher',
+          isTeacher: true,
+          isVerified: true,
+          subjects: teacher.subjects ?? [],
+          photoDataUrl: '',
+        })
+      }
       const subscriptions = await readSubscriptions()
       const subscription = findSessionSubscription(subscriptions, session)
       if (!subscription) {
@@ -825,11 +929,203 @@ const apiServer = createServer(async (request, response) => {
       return jsonResponse(response, badPayload ? 400 : 500, { error: badPayload ? 'صيغة الملف الشخصي غير صحيحة.' : 'تعذر حفظ الملف الشخصي.' })
     }
   }
+  const googleStudentLogin = request.method === 'POST' && requestUrl.pathname === '/api/auth/google/student'
+  if (googleStudentLogin) {
+    try {
+      const payload = await readJsonBody(request)
+      const identity = await verifyGoogleIdentityToken(payload?.idToken)
+      const links = await readFirebaseStudentLinks()
+      const existingLink = links[identity.uid]
+      const code = typeof payload.instituteCode === 'string' ? payload.instituteCode.trim().toUpperCase() : ''
+      let subscription = null
+
+      if (code) {
+        const subscriptions = await readSubscriptions()
+        subscription = /^[A-Z0-9-]{12,64}$/.test(code)
+          ? await findAccessCodeSubscription(subscriptions, code, identity.email)
+          : null
+        if (!subscription) return jsonResponse(response, 403, { error: 'كود المعهد غير صالح أو لا يطابق بريد Google الموثق.' })
+        if (existingLink && existingLink.subscriptionId !== subscription.id) {
+          return jsonResponse(response, 409, { error: 'حساب Google مرتبط مسبقاً باشتراك معهد آخر.' })
+        }
+        const linkedByAnotherAccount = Object.entries(links).some(([uid, link]) =>
+          uid !== identity.uid && link.subscriptionId === subscription.id)
+        if (linkedByAnotherAccount) return jsonResponse(response, 409, { error: 'هذا الاشتراك مرتبط مسبقاً بحساب Google آخر.' })
+        links[identity.uid] = {
+          subscriptionId: subscription.id,
+          email: identity.email,
+          linkedAt: existingLink?.linkedAt ?? new Date().toISOString(),
+        }
+        await saveFirebaseStudentLinks(links)
+      } else if (existingLink) {
+        const subscriptions = await readSubscriptions()
+        const linkedSubscription = subscriptions.codes.find((entry) =>
+          entry.id === existingLink.subscriptionId)
+        if (!linkedSubscription || linkedSubscription.active === false) {
+          return jsonResponse(response, 403, { error: 'الاشتراك المرتبط غير فعال.' })
+        }
+        if (String(linkedSubscription.email ?? '').toLowerCase() !== identity.email) {
+          return jsonResponse(response, 200, {
+            needsInstituteCode: true,
+            email: identity.email,
+            studentName: identity.displayName || 'طالب',
+          })
+        }
+        subscription = linkedSubscription
+      } else {
+        const [requests, subscriptions] = await Promise.all([
+          readRegistrationRequests(),
+          readSubscriptions(),
+        ])
+        const registrationState = googleStudentRegistrationState(
+          identity,
+          requests,
+          subscriptions.codes,
+        )
+        if (registrationState.type === 'pendingApproval') {
+          return jsonResponse(response, 200, { pendingApproval: true })
+        }
+        if (registrationState.type === 'needsInstituteCode') {
+          return jsonResponse(response, 200, {
+            needsInstituteCode: true,
+            email: identity.email,
+            studentName: identity.displayName || 'طالب',
+          })
+        }
+        if (registrationState.type === 'needsRegistration') {
+          return jsonResponse(response, 200, {
+            needsRegistration: true,
+            email: identity.email,
+            studentName: identity.displayName || 'طالب',
+          })
+        }
+        if (registrationState.type === 'inactive') {
+          return jsonResponse(response, 403, { error: 'الاشتراك المرتبط غير فعال.' })
+        }
+
+        const linkedByAnotherAccount = Object.entries(links).some(([uid, link]) =>
+          uid !== identity.uid && link.subscriptionId === registrationState.subscription.id)
+        if (linkedByAnotherAccount) {
+          return jsonResponse(response, 409, { error: 'طلب التسجيل مرتبط مسبقاً بحساب Google آخر.' })
+        }
+        subscription = registrationState.subscription
+        links[identity.uid] = {
+          subscriptionId: subscription.id,
+          email: identity.email,
+          linkedAt: new Date().toISOString(),
+        }
+        await saveFirebaseStudentLinks(links)
+        registrationState.registration.googleLinkedAt = new Date().toISOString()
+        await saveRegistrationRequests(requests)
+      }
+
+      const issued = await issueAccessSession(request, response, {
+        subscriptionId: subscription.id,
+        email: identity.email,
+        role: 'student',
+      })
+      return jsonResponse(response, 200, {
+        ok: true,
+        ...issued,
+        role: 'student',
+        isVerified: true,
+        studentName: subscription.studentName ?? identity.displayName ?? 'طالب',
+        grade: subscription.grade ?? 'البكالوريا',
+      })
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message.includes('حجم الطلب')) {
+        return jsonResponse(response, 400, { error: 'صيغة الطلب غير صحيحة.' })
+      }
+      if (error instanceof FirebaseConfigurationError) {
+        console.error('Firebase authentication is not configured:', error.message)
+        return jsonResponse(response, 503, { error: 'تسجيل Google غير مهيأ على الخادم حالياً.' })
+      }
+      if (error instanceof FirebaseIdentityError) {
+        return jsonResponse(response, 401, { error: 'تعذر التحقق من حساب Google. سجّل الدخول مجدداً.' })
+      }
+      console.error('Google student sign-in failed:', error.message)
+      return jsonResponse(response, 500, { error: 'تعذر إكمال تسجيل دخول الطالب.' })
+    }
+  }
+  const googleTeacherLogin = request.method === 'POST' && requestUrl.pathname === '/api/auth/google/teacher'
+  if (googleTeacherLogin) {
+    try {
+      const payload = await readJsonBody(request)
+      const identity = await verifyGoogleIdentityToken(payload?.idToken)
+      const teachers = await readTeacherProfiles()
+      let teacher = teachers[identity.uid]
+      if (!teacher) {
+        teacher = teachers[identity.uid] = {
+          uid: identity.uid,
+          email: identity.email,
+          displayName: identity.displayName || 'أستاذ',
+          specialty: '',
+          title: '',
+          subjects: [],
+          active: false,
+          createdAt: new Date().toISOString(),
+          approvedAt: null,
+        }
+        await saveTeacherProfiles(teachers)
+        return jsonResponse(response, 200, { pendingApproval: true })
+      }
+      teacher.email = identity.email
+      await saveTeacherProfiles(teachers)
+      if (teacher.active !== true) return jsonResponse(response, 200, { pendingApproval: true })
+      const issued = await issueAccessSession(request, response, {
+        role: 'teacher',
+        teacherUid: identity.uid,
+        email: identity.email,
+      })
+      return jsonResponse(response, 200, {
+        ok: true,
+        ...issued,
+        role: 'teacher',
+        isVerified: true,
+        isTeacher: true,
+        studentName: teacher.displayName,
+        grade: teacher.specialty || 'أستاذ',
+      })
+    } catch (error) {
+      if (error instanceof SyntaxError || error.message.includes('حجم الطلب')) {
+        return jsonResponse(response, 400, { error: 'صيغة الطلب غير صحيحة.' })
+      }
+      if (error instanceof FirebaseConfigurationError) {
+        console.error('Firebase authentication is not configured:', error.message)
+        return jsonResponse(response, 503, { error: 'تسجيل Google غير مهيأ على الخادم حالياً.' })
+      }
+      if (error instanceof FirebaseIdentityError) {
+        return jsonResponse(response, 401, { error: 'تعذر التحقق من حساب Google. سجّل الدخول مجدداً.' })
+      }
+      console.error('Google teacher sign-in failed:', error.message)
+      return jsonResponse(response, 500, { error: 'تعذر إكمال طلب حساب الأستاذ.' })
+    }
+  }
+
   if (request.method === 'GET' && requestUrl.pathname === '/api/session') {
     const token = getAccessToken(request, requestUrl)
     const session = getValidAccessSession(token)
     if (!session) return jsonResponse(response, 401, { error: 'جلسة الطالب غير صالحة أو منتهية.' })
     try {
+      if (session.role === 'teacher') {
+        const teachers = await readTeacherProfiles()
+        const teacher = teachers[session.teacherUid]
+        if (!teacher || teacher.active !== true || teacher.email !== session.email) {
+          await revokeStudentSession(token)
+          return jsonResponse(response, 403, { error: 'حساب الأستاذ غير معتمد أو موقوف.' })
+        }
+        return jsonResponse(response, 200, {
+          studentName: teacher.displayName,
+          email: teacher.email,
+          grade: teacher.specialty || 'أستاذ',
+          title: teacher.title ?? '',
+          subjects: teacher.subjects ?? [],
+          role: 'teacher',
+          isTeacher: true,
+          isVerified: true,
+          expiresAt: session.expiresAt,
+        })
+      }
       const subscriptions = await readSubscriptions()
       const subscription = findSessionSubscription(subscriptions, session)
       if (!subscription) {
@@ -845,6 +1141,8 @@ const apiServer = createServer(async (request, response) => {
         grade: subscription.grade ?? 'البكالوريا',
         programType: 'center',
         subjects: subscription.subjectNames ?? [],
+        role: 'student',
+        isVerified: true,
         expiresAt: session.expiresAt,
       })
     } catch {
@@ -901,9 +1199,20 @@ const apiServer = createServer(async (request, response) => {
 
       const payload = await readJsonBody(request)
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return jsonResponse(response, 400, { error: 'صيغة الطلب غير صحيحة.' })
-      const name = typeof payload.name === 'string' ? payload.name.trim() : ''
+      let googleIdentity = null
+      if (Object.hasOwn(payload, 'googleIdToken')) {
+        if (typeof payload.googleIdToken !== 'string' || payload.googleIdToken.length > 10_000) {
+          return jsonResponse(response, 400, { error: 'رمز Google غير صالح.' })
+        }
+        googleIdentity = await verifyGoogleIdentityToken(payload.googleIdToken)
+      }
+      const submittedEmail = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : ''
+      if (googleIdentity && submittedEmail && submittedEmail !== googleIdentity.email) {
+        return jsonResponse(response, 403, { error: 'يجب أن يطابق البريد الإلكتروني حساب Google الموثق.' })
+      }
+      const name = (typeof payload.name === 'string' ? payload.name : googleIdentity?.displayName ?? '').trim()
       const phone = typeof payload.phone === 'string' ? payload.phone.trim() : ''
-      const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : ''
+      const email = googleIdentity?.email ?? submittedEmail
       const gradeId = Number(payload.gradeId)
       const programType = payload.programType === undefined || payload.programType === 'center' ? 'center' : ''
       const subjectIds = Array.isArray(payload.subjectIds) ? [...new Set(payload.subjectIds.filter((id) => typeof id === 'string'))] : []
@@ -923,7 +1232,17 @@ const apiServer = createServer(async (request, response) => {
 
       const requests = await readRegistrationRequests()
       const duplicateRequest = requests.find((item) => item.email === email && item.gradeId === gradeId && item.programType === programType && item.status === 'pending')
-      if (duplicateRequest) return jsonResponse(response, 409, { error: 'لديك طلب قيد المراجعة لهذا الصف بالفعل.', requestId: duplicateRequest.id })
+      if (duplicateRequest) {
+        if (!googleIdentity) {
+          return jsonResponse(response, 409, { error: 'لديك طلب قيد المراجعة لهذا الصف بالفعل.', requestId: duplicateRequest.id })
+        }
+        if (duplicateRequest.firebaseUid && duplicateRequest.firebaseUid !== googleIdentity.uid) {
+          return jsonResponse(response, 409, { error: 'طلب التسجيل مرتبط مسبقاً بحساب Google آخر.' })
+        }
+        duplicateRequest.firebaseUid = googleIdentity.uid
+        await saveRegistrationRequests(requests)
+        return jsonResponse(response, 200, accountRequestResponse(duplicateRequest))
+      }
 
       const accountRequest = {
         id: randomUUID(),
@@ -938,6 +1257,7 @@ const apiServer = createServer(async (request, response) => {
         status: 'pending',
         statusMessage: '',
         createdAt: new Date(now).toISOString(),
+        ...(googleIdentity ? { firebaseUid: googleIdentity.uid } : {}),
       }
       requests.unshift(accountRequest)
       await saveRegistrationRequests(requests)
@@ -946,6 +1266,13 @@ const apiServer = createServer(async (request, response) => {
       return jsonResponse(response, 201, accountRequestResponse(accountRequest))
     } catch (error) {
       const invalidRequest = error instanceof SyntaxError || error.message.includes('حجم الطلب')
+      if (error instanceof FirebaseConfigurationError) {
+        console.error('Firebase authentication is not configured:', error.message)
+        return jsonResponse(response, 503, { error: 'تسجيل Google غير مهيأ على الخادم حالياً.' })
+      }
+      if (error instanceof FirebaseIdentityError) {
+        return jsonResponse(response, 401, { error: 'تعذر التحقق من حساب Google. سجّل الدخول مجدداً.' })
+      }
       return jsonResponse(response, invalidRequest ? 400 : 500, { error: invalidRequest ? 'صيغة الطلب غير صحيحة.' : 'تعذر حفظ طلب التسجيل.' })
     }
   }

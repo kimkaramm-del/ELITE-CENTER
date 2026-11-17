@@ -69,6 +69,8 @@ function startApiServer() {
       API_PORT: String(apiPort),
       API_HOST: '127.0.0.1',
       ADMIN_ACCESS_CODE: 'isam000',
+      FIREBASE_SERVICE_ACCOUNT_JSON: '',
+      FIREBASE_PROJECT_ID: '',
       ELITE_DATA_DIR: dataDirectory,
       ELITE_SKIP_DOTENV: 'true',
     },
@@ -353,10 +355,13 @@ test('protects request status, supports safe profile edits, and revokes student 
   })
   assert.equal(createPostResponse.status, 201)
   const createdPost = (await createPostResponse.json()).item
+  assert.equal(createdPost.author.isVerified, true)
+  assert.equal(createdPost.author.isTeacher, false)
   const postListResponse = await fetch(`${baseUrl}/api/community/posts`, { headers: authorization })
   assert.equal(postListResponse.status, 200)
   const postList = await postListResponse.json()
   assert.equal(postList.items[0].text, 'معلومة مفيدة للزملاء')
+  assert.equal(postList.items[0].author.isVerified, true)
   assert.equal('email' in postList.items[0].author, false)
   const ownPostsResponse = await fetch(`${baseUrl}/api/community/mine`, { headers: authorization })
   assert.equal(ownPostsResponse.status, 200)
@@ -374,6 +379,7 @@ test('protects request status, supports safe profile edits, and revokes student 
     body: JSON.stringify({ text: 'تعليق للاختبار' }),
   })
   assert.equal(commentResponse.status, 201)
+  assert.equal((await commentResponse.json()).item.author.isVerified, true)
   const bookmarkResponse = await fetch(`${baseUrl}/api/community/posts/${createdPost.id}/bookmark`, {
     method: 'POST',
     headers: browserAuthHeaders(loginResponses[0], true),
@@ -561,6 +567,7 @@ test('protects the web admin API with a session and strips stored access-code ha
   assert.equal(dataResponse.status, 200)
   const data = await dataResponse.json()
   assert.equal(Array.isArray(data.catalog.grades), true)
+  assert.deepEqual(data.teachers, [])
   assert.equal(JSON.stringify(data).includes('codeHash'), false)
   assert.equal(JSON.stringify(data).includes('codeSalt'), false)
 
@@ -571,6 +578,72 @@ test('protects the web admin API with a session and strips stored access-code ha
   })
   assert.equal(csrfRejected.status, 403)
 
+  const missingTeacher = await fetch(`${baseUrl}/api/admin/teachers/unknown`, {
+    method: 'PATCH',
+    headers: { cookie, origin: baseUrl, 'X-Elite-CSRF': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({ active: true }),
+  })
+  assert.equal(missingTeacher.status, 404)
+
+  const teacherUid = 'google.com:teacher-1'
+  writeStoredData('teacherProfiles', {
+    teachers: {
+      [teacherUid]: {
+        uid: teacherUid,
+        email: 'teacher@example.test',
+        displayName: 'أستاذ تجريبي',
+        specialty: '',
+        title: '',
+        subjects: [],
+        active: false,
+        createdAt: new Date().toISOString(),
+        approvedAt: null,
+      },
+    },
+  })
+  const teacherUpdate = await fetch(`${baseUrl}/api/admin/teachers/${encodeURIComponent(teacherUid)}`, {
+    method: 'PATCH',
+    headers: { cookie, origin: baseUrl, 'X-Elite-CSRF': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({
+      active: true,
+      displayName: 'الأستاذ المعتمد',
+      specialty: 'الرياضيات',
+      title: 'مدرس',
+      subjects: ['جبر', 'هندسة'],
+    }),
+  })
+  assert.equal(teacherUpdate.status, 200)
+  const approvedTeacher = await teacherUpdate.json()
+  assert.equal(approvedTeacher.active, true)
+  assert.equal(approvedTeacher.displayName, 'الأستاذ المعتمد')
+  assert.deepEqual(approvedTeacher.subjects, ['جبر', 'هندسة'])
+  const teacherDisabled = await fetch(`${baseUrl}/api/admin/teachers/${encodeURIComponent(teacherUid)}`, {
+    method: 'PATCH',
+    headers: { cookie, origin: baseUrl, 'X-Elite-CSRF': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({ active: false }),
+  })
+  assert.equal(teacherDisabled.status, 200)
+  assert.equal((await teacherDisabled.json()).active, false)
+  writeStoredData('teacherProfiles', { teachers: {} })
+
+  const linkedSubscription = readStoredData('subscriptions').codes.find((item) => item.email === email)
+  writeStoredData('firebaseStudentLinks', {
+    users: {
+      'google.com:student-1': {
+        subscriptionId: linkedSubscription.id,
+        email,
+        linkedAt: new Date().toISOString(),
+      },
+    },
+  })
+  const reissuedCode = await fetch(`${baseUrl}/api/admin/codes/${linkedSubscription.id}`, {
+    method: 'PATCH',
+    headers: { cookie, origin: baseUrl, 'X-Elite-CSRF': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'reissue' }),
+  })
+  assert.equal(reissuedCode.status, 200)
+  assert.deepEqual(readStoredData('firebaseStudentLinks').users, {})
+
   const logout = await fetch(`${baseUrl}/api/admin/logout`, {
     method: 'POST',
     headers: { cookie, origin: baseUrl, 'X-Elite-CSRF': '1' },
@@ -578,4 +651,40 @@ test('protects the web admin API with a session and strips stored access-code ha
   assert.equal(logout.status, 200)
   const expiredSession = await fetch(`${baseUrl}/api/admin/session`, { headers: { cookie } })
   assert.equal(expiredSession.status, 401)
+})
+
+test('requires a valid Firebase identity and reports missing server configuration', async () => {
+  const invalidIdentity = await fetch(`${baseUrl}/api/auth/google/student`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://localhost' },
+    body: JSON.stringify({ idToken: 'short' }),
+  })
+  assert.equal(invalidIdentity.status, 401)
+
+  const unconfiguredIdentity = await fetch(`${baseUrl}/api/auth/google/teacher`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://localhost' },
+    body: JSON.stringify({ idToken: 'valid-firebase-id-token-value' }),
+  })
+  assert.equal(unconfiguredIdentity.status, 503)
+})
+
+test('does not save a Google registration until the server verifies its Firebase token', async () => {
+  const requestsBefore = readStoredData('requests')
+  const response = await fetch(`${baseUrl}/api/requests`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://localhost' },
+    body: JSON.stringify({
+      name: 'Student Example',
+      phone: '+963 900 000 000',
+      email,
+      gradeId: 1,
+      programType: 'center',
+      subjectIds: ['math'],
+      googleIdToken: 'valid-firebase-id-token-value',
+    }),
+  })
+
+  assert.equal(response.status, 503)
+  assert.equal(readStoredData('requests').length, requestsBefore.length)
 })

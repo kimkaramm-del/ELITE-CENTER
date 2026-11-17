@@ -130,6 +130,10 @@ export function createAdminApi({
   matchesAccessCode,
   generateAccessCode,
   revokeStudentSessions,
+  readTeacherProfiles,
+  saveTeacherProfiles,
+  revokeTeacherSessions,
+  unlinkFirebaseStudent,
   communityStore,
   inspectMarksWorkbook,
 }) {
@@ -162,12 +166,13 @@ export function createAdminApi({
   }
 
   async function getDashboardData() {
-    const [catalog, requests, subscriptions, staff, community] = await Promise.all([
+    const [catalog, requests, subscriptions, staff, community, teachers] = await Promise.all([
       readCatalog(),
       readRegistrationRequests(),
       readSubscriptions(),
       readStaffAccounts(),
       communityStore.read(),
+      readTeacherProfiles(),
     ])
     return {
       catalog: { ...catalog, digitalCourses: undefined },
@@ -176,6 +181,17 @@ export function createAdminApi({
       )),
       subscriptions: subscriptions.codes.map(subscriptionSummary),
       staff: staff.accounts.map(staffSummary),
+      teachers: Object.values(teachers).map((teacher) => ({
+        uid: teacher.uid,
+        email: teacher.email,
+        displayName: teacher.displayName,
+        specialty: teacher.specialty ?? '',
+        title: teacher.title ?? '',
+        subjects: Array.isArray(teacher.subjects) ? teacher.subjects : [],
+        active: teacher.active === true,
+        createdAt: teacher.createdAt,
+        approvedAt: teacher.approvedAt ?? null,
+      })).sort((left, right) => left.displayName.localeCompare(right.displayName, 'ar')),
       announcements: community.announcements,
       reports: community.reports,
       posts: community.posts,
@@ -317,6 +333,67 @@ export function createAdminApi({
     }
 
     try {
+      const teacherMatch = pathname.match(/^\/api\/admin\/teachers\/([^/]+)$/)
+      let teacherUid = ''
+      if (teacherMatch) {
+        try {
+          teacherUid = decodeURIComponent(teacherMatch[1])
+        } catch {
+          teacherUid = ''
+        }
+      }
+      if (teacherMatch && request.method === 'PATCH' &&
+          /^[A-Za-z0-9_.:-]{1,128}$/.test(teacherUid)) {
+        const payload = await readJsonBody(request)
+        const teachers = await readTeacherProfiles()
+        const teacher = teachers[teacherUid]
+        if (!teacher) return jsonResponse(response, 404, { error: 'حساب الأستاذ غير موجود.' })
+
+        if (payload?.displayName !== undefined) {
+          if (typeof payload.displayName !== 'string' || payload.displayName.trim().length < 2 || payload.displayName.trim().length > 100) {
+            return jsonResponse(response, 400, { error: 'اسم الأستاذ يجب أن يكون بين حرفين و100 حرف.' })
+          }
+          teacher.displayName = payload.displayName.trim()
+        }
+        if (payload?.specialty !== undefined) {
+          if (typeof payload.specialty !== 'string' || payload.specialty.trim().length > 100) {
+            return jsonResponse(response, 400, { error: 'التخصص غير صالح.' })
+          }
+          teacher.specialty = payload.specialty.trim()
+        }
+        if (payload?.title !== undefined) {
+          if (typeof payload.title !== 'string' || payload.title.trim().length > 100) {
+            return jsonResponse(response, 400, { error: 'المسمى الوظيفي غير صالح.' })
+          }
+          teacher.title = payload.title.trim()
+        }
+        if (payload?.subjects !== undefined) {
+          if (!Array.isArray(payload.subjects) || payload.subjects.length > 12 ||
+              payload.subjects.some((subject) => typeof subject !== 'string' || !subject.trim() || subject.trim().length > 100)) {
+            return jsonResponse(response, 400, { error: 'قائمة المواد غير صالحة.' })
+          }
+          teacher.subjects = [...new Set(payload.subjects.map((subject) => subject.trim()))]
+        }
+        if (payload?.active !== undefined) {
+          if (typeof payload.active !== 'boolean') return jsonResponse(response, 400, { error: 'حالة الاعتماد غير صالحة.' })
+          teacher.active = payload.active
+          teacher.approvedAt = payload.active ? teacher.approvedAt ?? new Date().toISOString() : null
+        }
+        await saveTeacherProfiles(teachers)
+        if (teacher.active !== true) await revokeTeacherSessions(teacher.uid)
+        return jsonResponse(response, 200, {
+          uid: teacher.uid,
+          email: teacher.email,
+          displayName: teacher.displayName,
+          specialty: teacher.specialty ?? '',
+          title: teacher.title ?? '',
+          subjects: teacher.subjects ?? [],
+          active: teacher.active === true,
+          createdAt: teacher.createdAt,
+          approvedAt: teacher.approvedAt ?? null,
+        })
+      }
+
       if (request.method === 'PUT' && pathname === '/api/admin/catalog') {
         const catalog = await readJsonBody(request, 1_000_000)
         if (!validGradeCatalog(catalog)) return jsonResponse(response, 400, { error: 'بيانات الكتالوج غير صالحة.' })
@@ -346,6 +423,7 @@ export function createAdminApi({
             Object.assign(subscription, codeHash)
             subscription.active = true
             await revokeStudentSessions(subscription.id)
+            await unlinkFirebaseStudent(subscription.id)
           } else {
             subscription = {
               id: randomUUID(),
@@ -420,6 +498,7 @@ export function createAdminApi({
         if (!item) return jsonResponse(response, 404, { error: 'الاشتراك غير موجود.' })
         if (request.method === 'DELETE') {
           await revokeStudentSessions(item.id)
+          await unlinkFirebaseStudent(item.id)
           subscriptions.codes.splice(subscriptions.codes.indexOf(item), 1)
           await saveSubscriptions(subscriptions)
           return jsonResponse(response, 200, { ok: true })
@@ -438,6 +517,7 @@ export function createAdminApi({
             item.active = true
             item.updatedAt = new Date().toISOString()
             await revokeStudentSessions(item.id)
+            await unlinkFirebaseStudent(item.id)
             await saveSubscriptions(subscriptions)
             return jsonResponse(response, 200, { item: subscriptionSummary(item), code })
           }
